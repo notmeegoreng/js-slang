@@ -1,3 +1,4 @@
+import { defaultAnalysisOptions,ModuleAnalysisOptions } from './preprocessor/analyzer'
 import type { RequireProvider } from './requireProvider'
 
 export type ModuleManifest = {
@@ -17,5 +18,12 @@ export type ModuleDocumentation = Record<string, string>
 export type ImportTransformOptions = {
   wrapSourceModules: boolean
   loadTabs: boolean
-  checkImports: boolean
+
+  analysisOptions: ModuleAnalysisOptions
+}
+
+export const defaultImportOptions: ImportTransformOptions = {
+  wrapSourceModules: true,
+  loadTabs: true,
+  analysisOptions: defaultAnalysisOptions
 }

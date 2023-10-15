@@ -210,6 +210,11 @@ export interface Context<T = any> {
    * Whether the evaluation timeout should be increased
    */
   shouldIncreaseEvaluationTimeout: boolean
+
+  /**
+   * Did the previous code being run timeout?
+   */
+  isPreviousCodeTimeoutError: boolean
 }
 
 export type ModuleContext = {

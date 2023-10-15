@@ -2,21 +2,51 @@ import type * as es from 'estree'
 
 import { RuntimeSourceError } from '../errors/runtimeSourceError'
 
-export class UndefinedImportError extends RuntimeSourceError {
+export class UndefinedNamespaceImportError extends RuntimeSourceError {
   constructor(
-    public readonly symbol: string,
     public readonly moduleName: string,
-    node?: es.ImportSpecifier
+    node?: es.Node
   ) {
     super(node)
   }
 
   public explain(): string {
-    return `'${this.moduleName}' does not contain a definition for '${this.symbol}'`
+    return `'${this.moduleName}' does not have any exports!`
   }
 
   public elaborate(): string {
     return "Check your imports and make sure what you're trying to import exists!"
+  }
+}
+
+export class UndefinedImportError extends UndefinedNamespaceImportError {
+  constructor(
+    public readonly symbol: string,
+    moduleName: string,
+    node?: es.ImportDefaultSpecifier | es.ImportSpecifier | es.ExportSpecifier
+  ) {
+    super(moduleName, node)
+  }
+
+  public explain(): string {
+    return `'${this.moduleName}' does not export the symbol '${this.symbol}'`
+  }
+}
+
+export class UndefinedDefaultImportError extends UndefinedImportError {
+  constructor(
+    moduleName: string,
+    node?: es.ImportDefaultSpecifier | es.ImportSpecifier | es.ExportSpecifier
+  ) {
+    super(
+      'default',
+      moduleName,
+      node
+    )
+  }
+
+  public explain(): string {
+    return `'${this.moduleName}' does not have a default export!`
   }
 }
 

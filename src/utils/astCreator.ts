@@ -23,16 +23,17 @@ export const literal = (
   loc
 })
 
-export const memberExpression = (
-  object: es.Expression,
-  property: string | number
-): es.MemberExpression => ({
-  type: 'MemberExpression',
-  object,
-  computed: typeof property === 'number',
-  optional: false,
-  property: typeof property === 'number' ? literal(property) : identifier(property)
-})
+export function memberExpression(object: es.Expression, property: number): es.MemberExpression
+export function memberExpression(object: es.Expression, property: string, computed?: boolean): es.MemberExpression
+export function memberExpression(object: es.Expression, property: number | string, computed?: boolean): es.MemberExpression {
+  return {
+    type: 'MemberExpression',
+    object,
+    computed: typeof property === 'number' || Boolean(computed),
+    optional: false,
+    property: typeof property === 'number' ? literal(property) : identifier(property)
+  }
+}
 
 export const declaration = (
   name: string,
@@ -60,7 +61,7 @@ export const constantDeclaration = (
 
 export const callExpression = (
   callee: es.Expression,
-  args: es.Expression[],
+  args: (es.Expression | es.SpreadElement)[],
   loc?: es.SourceLocation | null
 ): es.CallExpression => ({
   type: 'CallExpression',
@@ -137,7 +138,7 @@ export const property = (key: string, value: es.Expression): es.Property => ({
   kind: 'init'
 })
 
-export const objectExpression = (properties: es.Property[]): es.ObjectExpression => ({
+export const objectExpression = (properties: (es.Property | es.SpreadElement)[]): es.ObjectExpression => ({
   type: 'ObjectExpression',
   properties
 })
@@ -325,10 +326,11 @@ export const arrowFunctionExpression = (
 
 export const variableDeclaration = (
   declarations: es.VariableDeclarator[],
-  loc?: es.SourceLocation | null
+  kind: es.VariableDeclaration['kind'] = 'const',
+  loc?: es.SourceLocation | null,
 ): es.VariableDeclaration => ({
   type: 'VariableDeclaration',
-  kind: 'const',
+  kind,
   declarations,
   loc
 })
@@ -346,7 +348,7 @@ export const variableDeclarator = (
 
 export const ifStatement = (
   test: es.Expression,
-  consequent: es.BlockStatement,
+  consequent: es.Statement,
   alternate: es.Statement,
   loc?: es.SourceLocation | null
 ): es.IfStatement => ({

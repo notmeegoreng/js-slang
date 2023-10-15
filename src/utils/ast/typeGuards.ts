@@ -1,4 +1,5 @@
 import type * as es from 'estree'
+import { Node } from 'estree'
 
 export const isImportDeclaration = (node: es.Program['body'][0]): node is es.ImportDeclaration =>
   node.type === 'ImportDeclaration'
@@ -47,3 +48,6 @@ export function isDeclaration(node: es.Node): node is es.Declaration {
     node.type === 'ClassDeclaration'
   )
 }
+
+export const isSourceModule = (path: string) => !path.startsWith('.') && !path.startsWith('/');
+export const isVariableDeclaration = (declaration: Node): declaration is es.VariableDeclaration => declaration.type === 'VariableDeclaration';

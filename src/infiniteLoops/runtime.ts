@@ -282,22 +282,23 @@ function trackLoc(loc: es.SourceLocation | undefined, state: st.State, ignoreMe?
   }
 }
 
-const functions = {}
-functions[FunctionNames.nothingFunction] = nothingFunction
-functions[FunctionNames.concretize] = sym.shallowConcretize
-functions[FunctionNames.hybridize] = hybridize
-functions[FunctionNames.wrapArg] = wrapArgIfFunction
-functions[FunctionNames.dummify] = sym.makeDummyHybrid
-functions[FunctionNames.saveBool] = saveBoolIfHybrid
-functions[FunctionNames.saveVar] = saveVarIfHybrid
-functions[FunctionNames.preFunction] = preFunction
-functions[FunctionNames.returnFunction] = returnFunction
-functions[FunctionNames.postLoop] = postLoop
-functions[FunctionNames.enterLoop] = enterLoop
-functions[FunctionNames.exitLoop] = exitLoop
-functions[FunctionNames.trackLoc] = trackLoc
-functions[FunctionNames.evalB] = sym.evaluateHybridBinary
-functions[FunctionNames.evalU] = sym.evaluateHybridUnary
+export const functions = {
+  [FunctionNames.nothingFunction]: nothingFunction,
+  [FunctionNames.concretize]: sym.shallowConcretize,
+  [FunctionNames.hybridize]: hybridize,
+  [FunctionNames.wrapArg]: wrapArgIfFunction,
+  [FunctionNames.dummify]: sym.makeDummyHybrid,
+  [FunctionNames.saveBool]: saveBoolIfHybrid,
+  [FunctionNames.saveVar]: saveVarIfHybrid,
+  [FunctionNames.preFunction]: preFunction,
+  [FunctionNames.returnFunction]: returnFunction,
+  [FunctionNames.postLoop]: postLoop,
+  [FunctionNames.enterLoop]: enterLoop,
+  [FunctionNames.exitLoop]: exitLoop,
+  [FunctionNames.trackLoc]: trackLoc,
+  [FunctionNames.evalB]: sym.evaluateHybridBinary,
+  [FunctionNames.evalU]: sym.evaluateHybridUnary,
+}
 
 /**
  * Tests the given program for infinite loops.
