@@ -162,7 +162,12 @@ export class Stash extends Stack<Value> {
  * @param context The context to evaluate the program in.
  * @returns The result of running the CSE machine.
  */
-export function evaluate(program: es.Program, context: Context, options: IOptions): Value {
+export function evaluate(
+  program: es.Program,
+  context: Context,
+  options: IOptions,
+  isPrelude: boolean
+): Value {
   try {
     checkProgramForUndefinedVariables(program, context)
   } catch (error) {
@@ -181,7 +186,7 @@ export function evaluate(program: es.Program, context: Context, options: IOption
       context.runtime.stash,
       options.envSteps,
       options.stepLimit,
-      options.isPrelude
+      isPrelude
     )
   } catch (error) {
     return new CseError(error)
@@ -201,7 +206,7 @@ export function evaluate(program: es.Program, context: Context, options: IOption
 export function resumeEvaluate(context: Context) {
   try {
     context.runtime.isRunning = true
-    return runCSEMachine(context, context.runtime.control!, context.runtime.stash!, -1, -1)
+    return runCSEMachine(context, context.runtime.control!, context.runtime.stash!, -1, -1, false)
   } catch (error) {
     return new CseError(error)
   } finally {
@@ -280,7 +285,7 @@ function runCSEMachine(
   stash: Stash,
   envSteps: number,
   stepLimit: number,
-  isPrelude: boolean = false
+  isPrelude: boolean
 ) {
   const eceState = generateCSEMachineStateStream(
     context,

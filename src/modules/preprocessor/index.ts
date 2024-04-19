@@ -8,16 +8,20 @@ import analyzeImportsAndExports from './analyzer'
 import parseProgramsAndConstructImportGraph from './linker'
 import defaultBundler, { type Bundler } from './bundler'
 
+export interface PreprocessSuccess {
+  ok: true
+  program: es.Program
+  files: Record<string, string>
+  verboseErrors: boolean
+  entrypointFilePath: string
+}
+
 export type PreprocessResult =
-  | {
-      ok: true
-      program: es.Program
-      files: Record<string, string>
-      verboseErrors: boolean
-    }
+  | PreprocessSuccess
   | {
       ok: false
       verboseErrors: boolean
+      entrypointFilePath: string
     }
 
 /**
@@ -54,7 +58,11 @@ const preprocessFileImports = async (
   )
   // Return 'undefined' if there are errors while parsing.
   if (!linkerResult.ok) {
-    return linkerResult
+    return {
+      ok: false,
+      verboseErrors: linkerResult.verboseErrors,
+      entrypointFilePath
+    }
   }
 
   const { programs, topoOrder, sourceModulesToImport } = linkerResult
@@ -73,7 +81,8 @@ const preprocessFileImports = async (
     context.errors.push(error)
     return {
       ok: false,
-      verboseErrors: linkerResult.verboseErrors
+      verboseErrors: linkerResult.verboseErrors,
+      entrypointFilePath
     }
   }
 
@@ -82,7 +91,8 @@ const preprocessFileImports = async (
     ok: true,
     program,
     files: linkerResult.files,
-    verboseErrors: linkerResult.verboseErrors
+    verboseErrors: linkerResult.verboseErrors,
+    entrypointFilePath
   }
 }
 

@@ -41,7 +41,6 @@ export interface IOptions {
   variant: Variant
   originalMaxExecTime: number
   useSubst: boolean
-  isPrelude: boolean
   throwInfiniteLoops: boolean
   envSteps: number
 
