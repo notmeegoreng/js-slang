@@ -1,6 +1,6 @@
-import * as es from 'estree'
+import type es from 'estree'
 
-import { NativeStorage } from '../types'
+import type { NativeStorage } from '../types'
 import * as create from '../utils/ast/astCreator'
 import { simple } from '../utils/walkers'
 
@@ -19,12 +19,14 @@ const globalIdNames = [
 
 export type NativeIds = Record<(typeof globalIdNames)[number], es.Identifier>
 
-export function getNativeIds(program: es.Program, usedIdentifiers: Set<string>): NativeIds {
-  const globalIds = {}
-  for (const identifier of globalIdNames) {
-    globalIds[identifier] = create.identifier(getUniqueId(usedIdentifiers, identifier))
-  }
-  return globalIds as NativeIds
+export function getNativeIds(usedIdentifiers: Set<string>): NativeIds {
+  return globalIdNames.reduce(
+    (res, identifier) => ({
+      ...res,
+      [identifier]: create.identifier(getUniqueId(usedIdentifiers, identifier))
+    }),
+    {} as NativeIds
+  )
 }
 
 export function getUniqueId(usedIdentifiers: Set<string>, uniqueId = 'unique') {
@@ -43,8 +45,10 @@ export function getUniqueId(usedIdentifiers: Set<string>, uniqueId = 'unique') {
 }
 
 export function getIdentifiersInNativeStorage(nativeStorage: NativeStorage) {
-  const used = new Set(...nativeStorage.builtins.keys())
-  nativeStorage.previousProgramsIdentifiers.forEach(id => used.add(id))
+  const used = new Set([
+    ...nativeStorage.previousProgramsIdentifiers.keys(),
+    ...nativeStorage.builtins.keys()
+  ])
   return used
 }
 

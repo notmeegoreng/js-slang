@@ -60,8 +60,11 @@ export const transpilerCommand = new Command('transpiler')
       return
     }
 
-    const { programs, topoOrder } = linkerResult
-    const bundledProgram = defaultBundler(programs, entrypointFilePath, topoOrder, context)
+    const bundledProgram = defaultBundler(linkerResult, context)
+    if (!bundledProgram) {
+      console.log(parseError(context.errors, linkerResult.verboseErrors))
+      return
+    }
 
     switch (opts.variant) {
       case Variant.GPU:

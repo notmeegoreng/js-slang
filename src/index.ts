@@ -28,10 +28,11 @@ export { SourceDocumentation } from './editors/ace/docTooltip'
 import { CSEResultPromise, resumeEvaluate } from './cse-machine/interpreter'
 import { ModuleNotFoundError } from './modules/errors'
 import type { ImportOptions } from './modules/moduleTypes'
-import preprocessFileImports from './modules/preprocessor'
 import { validateFilePath } from './modules/preprocessor/filePaths'
 import { getKeywords, getProgramNames, NameDeclaration } from './name-extractor'
 import { htmlRunner, resolvedErrorPromise, sourceFilesRunner } from './runner'
+import parseProgramsAndConstructImportGraph from './modules/preprocessor/linker'
+import defaultBundler from './modules/preprocessor/bundler'
 
 export interface IOptions {
   scheduler: 'preemptive' | 'async'
@@ -71,8 +72,13 @@ export function parseError(errors: SourceError[], verbose: boolean = verboseErro
     const filePath = error.location?.source ? `[${error.location.source}] ` : ''
     const line = error.location ? error.location.start.line : '<unknown>'
     const column = error.location ? error.location.start.column : '<unknown>'
-    const explanation = error.explain()
 
+    if (!error.explain) {
+      console.error(error)
+      // throw error
+    }
+
+    const explanation = error.explain()
     if (verbose) {
       // TODO currently elaboration is just tagged on to a new line after the error message itself. find a better
       // way to display it.
@@ -239,10 +245,8 @@ export async function runFilesInContext(
       p => Promise.resolve(files[p]),
       entrypointFilePath,
       context,
-      {
-        ...options,
-        shouldAddFileName: options.shouldAddFileName ?? Object.keys(files).length > 1
-      }
+      options,
+      options.shouldAddFileName ?? Object.keys(files).length > 1
     ))
   }
 
@@ -292,19 +296,25 @@ export async function compileFiles(
     }
   }
 
-  const preprocessResult = await preprocessFileImports(
+  const linkerResult = await parseProgramsAndConstructImportGraph(
     p => Promise.resolve(files[p]),
     entrypointFilePath,
     context,
-    { shouldAddFileName: Object.keys(files).length > 1 }
+    {},
+    Object.keys(files).length > 1
   )
 
-  if (!preprocessResult.ok) {
+  if (!linkerResult.ok) {
+    return undefined
+  }
+
+  const bundledProgram = defaultBundler(linkerResult, context)
+  if (!bundledProgram) {
     return undefined
   }
 
   try {
-    return compileToIns(preprocessResult.program, undefined, vmInternalFunctions)
+    return compileToIns(bundledProgram, undefined, vmInternalFunctions)
   } catch (error) {
     context.errors.push(error)
     return undefined

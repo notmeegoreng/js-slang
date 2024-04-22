@@ -17,17 +17,16 @@ import {
 import { createInvokedFunctionResultVariableDeclaration } from './constructors/contextSpecificConstructors'
 import hoistAndMergeImports from './transformers/hoistAndMergeImports'
 import removeExports from './transformers/removeExports'
+import type { LinkerSuccess } from './linker'
 
 /**
  * A function that converts multiple programs into a single program
  * using the topological ordering
  */
 export type Bundler = (
-  programs: Record<string, es.Program>,
-  entrypointFilePath: string,
-  topoOrder: string[],
+  linkerSuccess: Pick<LinkerSuccess, 'programs' | 'entrypointFilePath' | 'topoOrder'>,
   context: Context
-) => es.Program
+) => es.Program | undefined
 
 const getSourceModuleImports = (programs: Record<string, es.Program>): es.ImportDeclaration[] => {
   return Object.values(programs).flatMap(program => {
@@ -39,7 +38,7 @@ const getSourceModuleImports = (programs: Record<string, es.Program>): es.Import
     })
   })
 }
-const defaultBundler: Bundler = (programs, entrypointFilePath, topoOrder) => {
+const defaultBundler: Bundler = ({ programs, entrypointFilePath, topoOrder }) => {
   // We want to operate on the entrypoint program to get the eventual
   // preprocessed program.
   const entrypointProgram = programs[entrypointFilePath]

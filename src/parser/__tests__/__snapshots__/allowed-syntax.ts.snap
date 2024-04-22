@@ -1498,6 +1498,64 @@ Object {
 }
 `;
 
+exports[`Syntaxes are allowed in the chapter they are introduced 14: parse passes 2`] = `
+Object {
+  "alertResult": Array [],
+  "code": "parse(\\"export const x = 1;\\\\nx;\\");",
+  "displayResult": Array [],
+  "numErrors": 0,
+  "parsedErrors": "",
+  "result": Array [
+    "sequence",
+    Array [
+      Array [
+        Array [
+          "export_named_declaration",
+          Array [
+            Array [
+              "constant_declaration",
+              Array [
+                Array [
+                  "name",
+                  Array [
+                    "x",
+                    null,
+                  ],
+                ],
+                Array [
+                  Array [
+                    "literal",
+                    Array [
+                      1,
+                      null,
+                    ],
+                  ],
+                  null,
+                ],
+              ],
+            ],
+            null,
+          ],
+        ],
+        Array [
+          Array [
+            "name",
+            Array [
+              "x",
+              null,
+            ],
+          ],
+          null,
+        ],
+      ],
+      null,
+    ],
+  ],
+  "resultStatus": "finished",
+  "visualiseListResult": Array [],
+}
+`;
+
 exports[`Syntaxes are allowed in the chapter they are introduced 14: passes 1`] = `
 Object {
   "alertResult": Array [],
@@ -2228,6 +2286,25 @@ Object {
 `;
 
 exports[`Syntaxes are allowed in the chapter they are introduced 18: parse passes 1`] = `
+Object {
+  "alertResult": Array [],
+  "code": "parse(\\"[];\\");",
+  "displayResult": Array [],
+  "numErrors": 0,
+  "parsedErrors": "",
+  "result": Array [
+    "array_expression",
+    Array [
+      null,
+      null,
+    ],
+  ],
+  "resultStatus": "finished",
+  "visualiseListResult": Array [],
+}
+`;
+
+exports[`Syntaxes are allowed in the chapter they are introduced 18: parse passes 2`] = `
 Object {
   "alertResult": Array [],
   "code": "parse(\\"[];\\");",
@@ -3082,6 +3159,25 @@ Object {
 `;
 
 exports[`Syntaxes are allowed in the chapter they are introduced 25: parse passes 1`] = `
+Object {
+  "alertResult": Array [],
+  "code": "parse(\\"({});\\");",
+  "displayResult": Array [],
+  "numErrors": 0,
+  "parsedErrors": "",
+  "result": Array [
+    "object_expression",
+    Array [
+      null,
+      null,
+    ],
+  ],
+  "resultStatus": "finished",
+  "visualiseListResult": Array [],
+}
+`;
+
+exports[`Syntaxes are allowed in the chapter they are introduced 25: parse passes 2`] = `
 Object {
   "alertResult": Array [],
   "code": "parse(\\"({});\\");",

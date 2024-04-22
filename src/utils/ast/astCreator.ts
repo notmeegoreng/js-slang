@@ -1,11 +1,11 @@
 import type es from 'estree'
 
-import {
+import type {
   AllowedDeclarations,
-  type BlockExpression,
-  type FunctionDeclarationExpression,
-  type Node,
-  type StatementSequence
+  BlockExpression,
+  FunctionDeclarationExpression,
+  Node,
+  StatementSequence
 } from '../../types'
 
 export const getVariableDeclarationName = (decl: es.VariableDeclaration) =>
@@ -78,6 +78,17 @@ export const memberExpression = (
   computed: typeof property === 'number',
   optional: false,
   property: typeof property === 'number' ? literal(property) : identifier(property)
+})
+
+export const computedMemberExpression = (
+  object: es.Expression,
+  property: string | number
+): es.MemberExpression => ({
+  type: 'MemberExpression',
+  object,
+  computed: true,
+  optional: false,
+  property: literal(property)
 })
 
 export const declaration = (
@@ -167,7 +178,7 @@ export const statementSequence = (
   loc
 })
 
-export const program = (body: es.Statement[]): es.Program => ({
+export const program = (body: es.Program['body']): es.Program => ({
   type: 'Program',
   sourceType: 'module',
   body
@@ -192,7 +203,9 @@ export const property = (key: string, value: es.Expression): es.Property => ({
   kind: 'init'
 })
 
-export const objectExpression = (properties: es.Property[]): es.ObjectExpression => ({
+export const objectExpression = (
+  properties: (es.Property | es.SpreadElement)[]
+): es.ObjectExpression => ({
   type: 'ObjectExpression',
   properties
 })

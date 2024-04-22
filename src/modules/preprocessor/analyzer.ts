@@ -16,7 +16,7 @@ import {
   UndefinedNamespaceImportError
 } from '../errors'
 import { isSourceModule } from '../utils'
-import type { Context } from '../../types'
+import type { LinkerSuccess } from './linker'
 
 export const defaultAnalysisOptions: ImportAnalysisOptions = {
   allowUndefinedImports: false,
@@ -46,20 +46,18 @@ export type ImportAnalysisOptions = {
  * - Checks for different imports being given the same local name
  */
 export default function analyzeImportsAndExports(
-  programs: Record<string, es.Program>,
-  entrypointFilePath: string,
-  topoOrder: string[],
-  { nativeStorage: { loadedModules } }: Context,
+  {
+    programs,
+    entrypointFilePath,
+    topoOrder
+  }: Pick<LinkerSuccess, 'programs' | 'entrypointFilePath' | 'topoOrder'>,
+  moduleDocs: Record<string, Set<string>>,
   options: Partial<ImportAnalysisOptions> = {}
 ) {
   const declaredNames = new Dict<
     string,
     ArrayMap<string, es.ImportDeclaration['specifiers'][number]>
   >()
-
-  const moduleDocs: Record<string, Set<string>> = Object.fromEntries(
-    Object.entries(loadedModules).map(([name, obj]) => [name, new Set(Object.keys(obj))])
-  )
 
   for (const sourceModule of [...topoOrder, entrypointFilePath]) {
     const program = programs[sourceModule]

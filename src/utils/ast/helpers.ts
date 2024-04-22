@@ -3,7 +3,7 @@ import type es from 'estree'
 import assert from '../assert'
 import { simple } from '../walkers'
 import { ArrayMap } from '../dict'
-import { isImportDeclaration, isVariableDeclaration } from './typeGuards'
+import { isDeclaration, isImportDeclaration, isModuleDeclaration } from './typeGuards'
 
 export function getModuleDeclarationSource(
   node: Exclude<es.ModuleDeclaration, es.ExportDefaultDeclaration>
@@ -53,15 +53,36 @@ export function extractIdsFromPattern(pattern: es.Pattern) {
 }
 
 export function getIdsFromDeclaration(
-  decl: es.Declaration,
+  decl: es.Declaration | Exclude<es.ModuleDeclaration, es.ExportAllDeclaration>,
   allowNull: true
 ): (es.Identifier | null)[]
-export function getIdsFromDeclaration(decl: es.Declaration, allowNull?: false): es.Identifier[]
-export function getIdsFromDeclaration(decl: es.Declaration, allowNull?: boolean) {
-  const rawIds = isVariableDeclaration(decl)
-    ? decl.declarations.flatMap(({ id }) => extractIdsFromPattern(id))
-    : [decl.id]
+export function getIdsFromDeclaration(
+  decl: es.Declaration | Exclude<es.ModuleDeclaration, es.ExportAllDeclaration>,
+  allowNull?: false
+): es.Identifier[]
+export function getIdsFromDeclaration(
+  decl: es.Declaration | Exclude<es.ModuleDeclaration, es.ExportAllDeclaration>,
+  allowNull?: boolean
+) {
+  function internal(decl: es.Node): (es.Identifier | null)[] {
+    switch (decl.type) {
+      case 'ExportDefaultDeclaration':
+        return internal(decl.declaration)
+      case 'ExportNamedDeclaration':
+        return decl.declaration ? internal(decl.declaration) : []
+      case 'ClassDeclaration':
+      case 'FunctionDeclaration':
+        return [decl.id]
+      case 'ImportDeclaration':
+        return decl.specifiers.map(({ local }) => local)
+      case 'VariableDeclaration':
+        return decl.declarations.flatMap(({ id }) => extractIdsFromPattern(id))
+      default:
+        return []
+    }
+  }
 
+  const rawIds = internal(decl)
   if (!allowNull) {
     rawIds.forEach(each => {
       assert(each !== null, 'Encountered a null identifier!')
@@ -84,4 +105,15 @@ export const getImportedName = (
     case 'ExportSpecifier':
       return spec.local.name
   }
+}
+
+export function getIdentifiersDeclaredByProgram(program: es.Program): string[] {
+  const ids = program.body.flatMap(node => {
+    if (!isDeclaration(node) && !isModuleDeclaration(node)) return []
+    if (node.type === 'ExportAllDeclaration') return []
+
+    return getIdsFromDeclaration(node)
+  })
+
+  return ids.map(({ name }) => name)
 }

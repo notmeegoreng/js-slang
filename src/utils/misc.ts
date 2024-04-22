@@ -29,6 +29,19 @@ export function mapAndFilter<T, U>(items: T[], mapper: (input: T) => U | undefin
   }, [] as U[])
 }
 
+export function mapObject<T extends Record<any, any>, U>(
+  obj: T,
+  mapper: (key: keyof T, value: T[keyof T]) => U
+): Record<keyof T, U> {
+  return objectEntries(obj).reduce(
+    (res, [key, value]) => ({
+      ...res,
+      [key]: mapper(key, value)
+    }),
+    {} as Record<keyof T, U>
+  )
+}
+
 /**
  * Type safe `Object.keys`
  */
@@ -41,4 +54,14 @@ export function objectKeys<T extends string | number | symbol>(obj: Record<T, an
  */
 export function objectValues<T>(obj: Record<any, T>) {
   return Object.values(obj) as T[]
+}
+
+type DeconstructRecord<T extends Record<any, any>> = {
+  [K in keyof T]: [K, T[K]]
+}
+
+type EntriesOfRecord<T extends Record<any, any>> = DeconstructRecord<T>[keyof T]
+
+export function objectEntries<T extends Record<any, any>>(obj: T): EntriesOfRecord<T>[] {
+  return Object.entries(obj)
 }

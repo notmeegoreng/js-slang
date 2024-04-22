@@ -21,19 +21,23 @@ type ModuleDeclarationWithSource = Exclude<es.ModuleDeclaration, es.ExportDefaul
  */
 class LinkerError extends Error {}
 
+export interface LinkerSuccess {
+  ok: true
+  programs: Record<string, es.Program>
+  entrypointFilePath: string
+  topoOrder: string[]
+  verboseErrors: boolean
+  files: Record<string, string>
+  sourceModulesToImport: Set<string>
+}
+
 export type LinkerResult =
   | {
       ok: false
+      entrypointFilePath: string
       verboseErrors: boolean
     }
-  | {
-      ok: true
-      programs: Record<string, es.Program>
-      files: Record<string, string>
-      sourceModulesToImport: Set<string>
-      topoOrder: string[]
-      verboseErrors: boolean
-    }
+  | LinkerSuccess
 
 export type LinkerOptions = {
   resolverOptions: ImportResolutionOptions
@@ -182,6 +186,7 @@ export default async function parseProgramsAndConstructImportGraph(
       return {
         ok: true,
         topoOrder: topologicalOrderResult.topologicalOrder,
+        entrypointFilePath,
         programs,
         sourceModulesToImport,
         files,
@@ -200,6 +205,7 @@ export default async function parseProgramsAndConstructImportGraph(
 
   return {
     ok: false,
+    entrypointFilePath,
     verboseErrors: hasVerboseErrors()
   }
 }

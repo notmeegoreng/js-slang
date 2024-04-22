@@ -1,22 +1,23 @@
 import type es from 'estree'
 import * as _ from 'lodash'
-import type { RawSourceMap } from 'source-map'
+import { SourceMapGenerator, type RawSourceMap } from 'source-map'
 
+import { generate } from 'astring'
 import { type IOptions, type Result } from '..'
 import { JSSLANG_PROPERTIES, UNKNOWN_LOCATION } from '../constants'
 import { CSEResultPromise, evaluate as CSEvaluate } from '../cse-machine/interpreter'
 import { ExceptionError } from '../errors/errors'
 import { RuntimeSourceError } from '../errors/runtimeSourceError'
 import { TimeoutError } from '../errors/timeoutErrors'
-import { transpileToGPU } from '../gpu/gpu'
 import { isPotentialInfiniteLoop } from '../infiniteLoops/errors'
 import { testForInfiniteLoop } from '../infiniteLoops/runtime'
 import { evaluateProgram as evaluate } from '../interpreter/interpreter'
 import { nonDetEvaluate } from '../interpreter/interpreter-non-det'
-import { transpileToLazy } from '../lazy/lazy'
-import preprocessFileImports, { type PreprocessSuccess } from '../modules/preprocessor'
-import { defaultAnalysisOptions } from '../modules/preprocessor/analyzer'
-import { defaultLinkerOptions } from '../modules/preprocessor/linker'
+import analyzeImportsAndExports, { defaultAnalysisOptions } from '../modules/preprocessor/analyzer'
+import parseProgramsAndConstructImportGraph, {
+  defaultLinkerOptions,
+  type LinkerSuccess
+} from '../modules/preprocessor/linker'
 import { parse } from '../parser/parser'
 import { AsyncScheduler, NonDetScheduler, PreemptiveScheduler } from '../schedulers'
 import {
@@ -27,7 +28,6 @@ import {
   redexify
 } from '../stepper/stepper'
 import { sandboxedEval } from '../transpiler/evalContainer'
-import { transpile } from '../transpiler/transpiler'
 import { Chapter, type Context, type RecursivePartial, type Scheduler, Variant } from '../types'
 import { forceIt } from '../utils/operators'
 import { validateAndAnnotate } from '../validator/validator'
@@ -36,6 +36,11 @@ import { runWithProgram } from '../vm/svml-machine'
 import type { FileGetter } from '../modules/moduleTypes'
 import { mapResult } from '../alt-langs/mapper'
 import assert from '../utils/assert'
+import defaultBundler, { type Bundler } from '../modules/preprocessor/bundler'
+import loadSourceModules from '../modules/loader'
+import { transpileFilesToFullJS, transpileFilesToSource } from '../transpiler/transpileBundler'
+import { transpileFilesToGPU } from '../gpu/gpu'
+import { transpileFilesToLazy } from '../lazy/lazy'
 import { toSourceError } from './errors'
 import { fullJSRunner } from './fullJSRunner'
 import { determineExecutionMethod, determineVariant, resolvedErrorPromise } from './utils'
@@ -67,50 +72,38 @@ let isPreviousCodeTimeoutError = false
 interface RunnerOptions {
   evaluatePreludes?: boolean
   performValidation?: boolean
+  bundler: Bundler
 }
 
-function createSourceRunner(
-  rawRunner: (
-    program: es.Program,
-    context: Context,
-    options: IOptions,
-    isPrelude: boolean
-  ) => Promise<Result>,
-  rawRunnerOptions: Partial<RunnerOptions> = {}
-) {
+type RawRunner = (
+  program: es.Program,
+  context: Context,
+  options: IOptions,
+  isPrelude: boolean
+) => Promise<Result>
+
+function createSourceRunner(rawRunner: RawRunner, rawRunnerOptions: Partial<RunnerOptions> = {}) {
   const runnerOptions: Required<RunnerOptions> = {
     evaluatePreludes: true,
     performValidation: true,
+    bundler: defaultBundler,
     ...rawRunnerOptions
   }
 
   return async (
-    preprocessResult: Pick<PreprocessSuccess, 'program' | 'files' | 'entrypointFilePath'>,
+    linkerResult: LinkerSuccess,
     context: Context,
     options: IOptions
   ): Promise<Result> => {
-    const { files, program: preprocessedProgram, entrypointFilePath } = preprocessResult
-
-    // FIXME: The type checker does not support the typing of multiple files, so
-    //        we only push the code in the entrypoint file. Ideally, all files
-    //        involved in the program evaluation should be type-checked. Either way,
-    //        the type checker is currently not used at all so this is not very
-    //        urgent.
-    context.unTypecheckedCode.push(files[entrypointFilePath])
-
-    const currentCode = {
-      files,
-      entrypointFilePath
-    }
-    context.shouldIncreaseEvaluationTimeout = _.isEqual(previousCode, currentCode)
-    previousCode = currentCode
+    const preprocessedProgram = runnerOptions.bundler(linkerResult, context)
+    if (!preprocessedProgram) return resolvedErrorPromise
 
     context.previousPrograms.unshift(preprocessedProgram)
 
     if (runnerOptions.evaluatePreludes && context.prelude !== null) {
       const prelude = parse(context.prelude, context)
       assert(prelude !== null, 'Prelude code should not have parser errors')
-
+      
       const preludeResult = await rawRunner(prelude, context, options, true)
       assert(preludeResult.status !== 'error', 'Prelude code should not have evaluation errors')
     }
@@ -122,8 +115,100 @@ function createSourceRunner(
 
     const result = await rawRunner(preprocessedProgram, context, options, false)
     const resultMapper = mapResult(context)
-
+    
     return resultMapper(result)
+  }
+}
+
+function createNativeRunner(
+  bundler: Bundler
+) {
+  return async (linkerSuccess: LinkerSuccess, context: Context, options: IOptions) => {
+    const normalBundler = () => {
+      const program = defaultBundler(linkerSuccess, context)
+      assert(!!program, 'If parent program had no errors, this program should not either')
+      return program
+    }
+
+    return createSourceRunner(async (program, context, options) => {
+      if (context.shouldIncreaseEvaluationTimeout && isPreviousCodeTimeoutError) {
+        context.nativeStorage.maxExecTime *= JSSLANG_PROPERTIES.factorToIncreaseBy
+      } else {
+        context.nativeStorage.maxExecTime = options.originalMaxExecTime
+      }
+
+      // For whatever reason, the transpiler mutates the state of the AST as it is transpiling and inserts
+      // a bunch of global identifiers to it. Once that happens, the infinite loop detection instrumentation
+      // ends up generating code that has syntax errors. As such, we need to make a deep copy here to preserve
+      // the original AST for future use, such as with the infinite loop detector.
+      const transpiledProgram = _.cloneDeep(program)
+      let transpiled: string
+      let sourceMapJson: RawSourceMap | undefined
+      try {
+        const sourceMapGenerator = new SourceMapGenerator()
+        transpiled = generate(transpiledProgram, { sourceMapGenerator })
+
+        if (process.env.NODE_ENV === 'development') {
+          console.log(transpiled)
+        }
+
+        sourceMapJson = sourceMapGenerator.toJSON()
+        let value = sandboxedEval(transpiled, context.nativeStorage)
+
+        if (context.variant === Variant.LAZY) {
+          value = forceIt(value)
+        }
+
+        isPreviousCodeTimeoutError = false
+
+        return {
+          status: 'finished',
+          context,
+          value
+        }
+      } catch (error) {
+        const isDefaultVariant =
+          options.variant === undefined || options.variant === Variant.DEFAULT
+        if (isDefaultVariant && isPotentialInfiniteLoop(error)) {
+          const detectedInfiniteLoop = testForInfiniteLoop(
+            normalBundler(),
+            context.previousPrograms.slice(1),
+            context.nativeStorage.loadedModules
+          )
+          if (detectedInfiniteLoop !== undefined) {
+            if (options.throwInfiniteLoops) {
+              context.errors.push(detectedInfiniteLoop)
+              return resolvedErrorPromise
+            } else {
+              error.infiniteLoopError = detectedInfiniteLoop
+              if (error instanceof ExceptionError) {
+                ;(error.error as any).infiniteLoopError = detectedInfiniteLoop
+              }
+            }
+          }
+        }
+        if (error instanceof RuntimeSourceError) {
+          context.errors.push(error)
+          if (error instanceof TimeoutError) {
+            isPreviousCodeTimeoutError = true
+          }
+          return resolvedErrorPromise
+        }
+        if (error instanceof ExceptionError) {
+          // if we know the location of the error, just throw it
+          if (error.location.start.line !== -1) {
+            context.errors.push(error)
+            return resolvedErrorPromise
+          } else {
+            error = error.error // else we try to get the location from source map
+          }
+        }
+
+        const sourceError = await toSourceError(error, sourceMapJson)
+        context.errors.push(sourceError)
+        return resolvedErrorPromise
+      }
+    }, { bundler, evaluatePreludes: false })(linkerSuccess, context, options)
   }
 }
 
@@ -140,32 +225,36 @@ const runners = {
     const value = CSEvaluate(program, context, theOptions, false)
     return CSEResultPromise(context, value)
   }),
-  concurrent: createSourceRunner((program, context, options) => {
-    if (context.shouldIncreaseEvaluationTimeout) {
-      context.nativeStorage.maxExecTime *= JSSLANG_PROPERTIES.factorToIncreaseBy
-    } else {
-      context.nativeStorage.maxExecTime = options.originalMaxExecTime
-    }
+  concurrent: createSourceRunner(
+    (program, context, options) => {
+      if (context.shouldIncreaseEvaluationTimeout) {
+        context.nativeStorage.maxExecTime *= JSSLANG_PROPERTIES.factorToIncreaseBy
+      } else {
+        context.nativeStorage.maxExecTime = options.originalMaxExecTime
+      }
 
-    try {
-      return Promise.resolve({
-        status: 'finished',
-        context,
-        value: runWithProgram(compileForConcurrent(program, context), context)
-      })
-    } catch (error) {
-      if (error instanceof RuntimeSourceError || error instanceof ExceptionError) {
-        context.errors.push(error) // use ExceptionErrors for non Source Errors
+      try {
+        return Promise.resolve({
+          status: 'finished',
+          context,
+          value: runWithProgram(compileForConcurrent(program, context), context)
+        })
+      } catch (error) {
+        if (error instanceof RuntimeSourceError || error instanceof ExceptionError) {
+          context.errors.push(error) // use ExceptionErrors for non Source Errors
+          return resolvedErrorPromise
+        }
+        context.errors.push(new ExceptionError(error, UNKNOWN_LOCATION))
         return resolvedErrorPromise
       }
-      context.errors.push(new ExceptionError(error, UNKNOWN_LOCATION))
-      return resolvedErrorPromise
-    }
-  }, { evaluatePreludes: false }),
+    },
+    { evaluatePreludes: false }
+  ),
   fullJS: createSourceRunner(
     (program, context, options) => fullJSRunner(program, context, options.importOptions),
-    { performValidation: false, evaluatePreludes: false }
+    { performValidation: false, evaluatePreludes: false, bundler: transpileFilesToFullJS }
   ),
+  gpu: createNativeRunner(transpileFilesToGPU),
   interpreter: createSourceRunner((program, context, options) => {
     let it = evaluate(program, context)
     let scheduler: Scheduler
@@ -179,118 +268,38 @@ const runners = {
     }
     return scheduler.run(it, context)
   }),
-  native: createSourceRunner(async (program, context, options, isPrelude) => {
-    if (!isPrelude) {
-      if (context.shouldIncreaseEvaluationTimeout && isPreviousCodeTimeoutError) {
-        context.nativeStorage.maxExecTime *= JSSLANG_PROPERTIES.factorToIncreaseBy
-      } else {
-        context.nativeStorage.maxExecTime = options.originalMaxExecTime
-      }
-    }
-
-    // For whatever reason, the transpiler mutates the state of the AST as it is transpiling and inserts
-    // a bunch of global identifiers to it. Once that happens, the infinite loop detection instrumentation
-    // ends up generating code that has syntax errors. As such, we need to make a deep copy here to preserve
-    // the original AST for future use, such as with the infinite loop detector.
-    const transpiledProgram = _.cloneDeep(program)
-    let transpiled
-    let sourceMapJson: RawSourceMap | undefined
-    try {
-      switch (context.variant) {
-        case Variant.GPU:
-          transpileToGPU(transpiledProgram)
-          break
-        case Variant.LAZY:
-          transpileToLazy(transpiledProgram)
-          break
-      }
-
-      ;({ transpiled, sourceMapJson } = transpile(transpiledProgram, context))
-      let value = sandboxedEval(transpiled, context.nativeStorage)
-
-      if (context.variant === Variant.LAZY) {
-        value = forceIt(value)
-      }
-
-      if (!isPrelude) {
-        isPreviousCodeTimeoutError = false
-      }
-
-      return {
-        status: 'finished',
-        context,
-        value
-      }
-    } catch (error) {
-      const isDefaultVariant = options.variant === undefined || options.variant === Variant.DEFAULT
-      if (isDefaultVariant && isPotentialInfiniteLoop(error)) {
-        const detectedInfiniteLoop = testForInfiniteLoop(
-          program,
-          context.previousPrograms.slice(1),
-          context.nativeStorage.loadedModules
-        )
-        if (detectedInfiniteLoop !== undefined) {
-          if (options.throwInfiniteLoops) {
-            context.errors.push(detectedInfiniteLoop)
-            return resolvedErrorPromise
-          } else {
-            error.infiniteLoopError = detectedInfiniteLoop
-            if (error instanceof ExceptionError) {
-              ;(error.error as any).infiniteLoopError = detectedInfiniteLoop
-            }
-          }
-        }
-      }
-      if (error instanceof RuntimeSourceError) {
-        context.errors.push(error)
-        if (error instanceof TimeoutError) {
-          isPreviousCodeTimeoutError = true
-        }
+  lazy: createNativeRunner(transpileFilesToLazy),
+  native: createNativeRunner(transpileFilesToSource),
+  stepper: createSourceRunner(
+    (program, context, options) => {
+      if (context.errors.length > 0) {
         return resolvedErrorPromise
       }
-      if (error instanceof ExceptionError) {
-        // if we know the location of the error, just throw it
-        if (error.location.start.line !== -1) {
-          context.errors.push(error)
-          return resolvedErrorPromise
-        } else {
-          error = error.error // else we try to get the location from source map
-        }
+      const redexedSteps: IStepperPropContents[] = []
+      const steps = getEvaluationSteps(program, context, options)
+      for (const step of steps) {
+        const redex = getRedex(step[0], step[1])
+        const redexed = redexify(step[0], step[1])
+        redexedSteps.push({
+          code: redexed[0],
+          redex: redexed[1],
+          explanation: step[2],
+          function: callee(redex, context)
+        })
       }
-
-      const sourceError = await toSourceError(error, sourceMapJson)
-      context.errors.push(sourceError)
-      return resolvedErrorPromise
-    }
-  }),
-  stepper: createSourceRunner((program, context, options) => {
-    if (context.errors.length > 0) {
-      return resolvedErrorPromise
-    }
-    const redexedSteps: IStepperPropContents[] = []
-    const steps = getEvaluationSteps(program, context, options)
-    for (const step of steps) {
-      const redex = getRedex(step[0], step[1])
-      const redexed = redexify(step[0], step[1])
-      redexedSteps.push({
-        code: redexed[0],
-        redex: redexed[1],
-        explanation: step[2],
-        function: callee(redex, context)
+      return Promise.resolve({
+        status: 'finished',
+        context,
+        value: redexedSteps
       })
-    }
-    return Promise.resolve({
-      status: 'finished',
-      context,
-      value: redexedSteps
-    })
-  }, { evaluatePreludes: false })
+    },
+    { evaluatePreludes: false }
+  )
 }
 
 async function sourceRunner(
-  preprocessResult: Pick<PreprocessSuccess, 'program' | 'files' | 'entrypointFilePath'>,
+  preprocessResult: LinkerSuccess,
   context: Context,
-  isVerboseErrorsEnabled: boolean,
   options: RecursivePartial<IOptions> = {}
 ): Promise<Result> {
   // It is necessary to make a copy of the DEFAULT_SOURCE_OPTIONS object because merge()
@@ -314,20 +323,29 @@ async function sourceRunner(
     return runners.stepper(preprocessResult, context, theOptions)
   }
 
-  determineExecutionMethod(theOptions, context, preprocessResult.program, isVerboseErrorsEnabled)
+  determineExecutionMethod(
+    theOptions,
+    context,
+    preprocessResult.programs,
+    preprocessResult.verboseErrors
+  )
 
-  // native, don't evaluate prelude
-  if (context.executionMethod === 'native' && context.variant === Variant.NATIVE) {
-    return runners.fullJS(preprocessResult, context, theOptions)
+  if (context.executionMethod === 'native') {
+    switch (context.variant) {
+      case Variant.NATIVE:
+        return runners.fullJS(preprocessResult, context, theOptions)
+      case Variant.GPU:
+        return runners.gpu(preprocessResult, context, theOptions)
+      case Variant.LAZY:
+        return runners.lazy(preprocessResult, context, theOptions)
+      default:
+        return runners.native(preprocessResult, context, theOptions)
+    }
   }
 
   // All runners after this point evaluate the prelude.
   if (context.variant === Variant.EXPLICIT_CONTROL || context.executionMethod === 'cse-machine') {
     return runners['cse-machine'](preprocessResult, context, theOptions)
-  }
-
-  if (context.executionMethod === 'native') {
-    return runners.native(preprocessResult, context, theOptions)
   }
 
   return runners.interpreter(preprocessResult, context, theOptions)
@@ -341,32 +359,70 @@ export async function sourceFilesRunner(
   filesInput: FileGetter,
   entrypointFilePath: string,
   context: Context,
-  options: RecursivePartial<IOptions> = {}
+  options: RecursivePartial<IOptions> = {},
+  shouldAddFileName: boolean
 ): Promise<{
   result: Result
   verboseErrors: boolean
 }> {
-  const preprocessResult = await preprocessFileImports(
+  const linkerResult = await parseProgramsAndConstructImportGraph(
     filesInput,
     entrypointFilePath,
     context,
-    options
+    options.importOptions,
+    shouldAddFileName
   )
-
-  if (!preprocessResult.ok) {
+  if (!linkerResult.ok) {
     return {
       result: { status: 'error' },
-      verboseErrors: preprocessResult.verboseErrors
+      verboseErrors: linkerResult.verboseErrors
     }
   }
 
-  const { verboseErrors } = preprocessResult
+  try {
+    const loadedModules = await loadSourceModules(
+      linkerResult.sourceModulesToImport,
+      context,
+      options.importOptions?.loadTabs ?? true
+    )
+    const moduleDocs = Object.entries(loadedModules).reduce(
+      (res, [key, value]) => ({
+        ...res,
+        [key]: new Set(Object.keys(value))
+      }),
+      {} as Record<string, Set<string>>
+    )
 
-  const result = await sourceRunner(preprocessResult, context, verboseErrors, options)
+    analyzeImportsAndExports(linkerResult, moduleDocs, options.importOptions)
+  } catch (error) {
+    context.errors.push(error)
+    return {
+      result: { status: 'error' },
+      verboseErrors: linkerResult.verboseErrors
+    }
+  }
+
+  const { files } = linkerResult
+
+  // FIXME: The type checker does not support the typing of multiple files, so
+  //        we only push the code in the entrypoint file. Ideally, all files
+  //        involved in the program evaluation should be type-checked. Either way,
+  //        the type checker is currently not used at all so this is not very
+  //        urgent.
+  context.unTypecheckedCode.push(files[entrypointFilePath])
+
+  const currentCode = {
+    files,
+    entrypointFilePath
+  }
+  context.shouldIncreaseEvaluationTimeout = _.isEqual(previousCode, currentCode)
+  previousCode = currentCode
+
+  const result = await sourceRunner(linkerResult, context, options)
 
   return {
     result,
-    verboseErrors
+    verboseErrors: linkerResult.verboseErrors
   }
 }
 
@@ -391,6 +447,7 @@ export function runCodeInSource(
     },
     defaultFilePath,
     context,
-    options
+    options,
+    false
   )
 }

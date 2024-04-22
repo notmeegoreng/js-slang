@@ -6,7 +6,11 @@ import { type RawSourceMap, SourceMapGenerator } from 'source-map'
 import { NATIVE_STORAGE_ID, UNKNOWN_LOCATION } from '../constants'
 import { Chapter, type Context, type NativeStorage, type Node, Variant } from '../types'
 import * as create from '../utils/ast/astCreator'
-import { filterImportDeclarations, getImportedName } from '../utils/ast/helpers'
+import {
+  filterImportDeclarations,
+  getIdentifiersDeclaredByProgram,
+  getImportedName
+} from '../utils/ast/helpers'
 import {
   getFunctionDeclarationNamesInProgram,
   getIdentifiersInNativeStorage,
@@ -44,19 +48,6 @@ export function transformImportDeclarations(
   })
 
   return [declNodes, otherNodes]
-}
-
-export function getGloballyDeclaredIdentifiers(program: es.Program): string[] {
-  return program.body
-    .filter(statement => statement.type === 'VariableDeclaration')
-    .map(
-      ({
-        declarations: {
-          0: { id }
-        },
-        kind
-      }: es.VariableDeclaration) => (id as es.Identifier).name
-    )
 }
 
 export function getBuiltins(nativeStorage: NativeStorage): es.Statement[] {
@@ -432,7 +423,7 @@ function transpileToSource(
     ...getIdentifiersInProgram(program),
     ...getIdentifiersInNativeStorage(context.nativeStorage)
   ])
-  const globalIds = getNativeIds(program, usedIdentifiers)
+  const globalIds = getNativeIds(usedIdentifiers)
 
   const functionsToStringMap = generateFunctionsToStringMap(program)
 
@@ -455,7 +446,7 @@ function transpileToSource(
 
   program.body = (importNodes as es.Program['body']).concat(otherNodes)
 
-  getGloballyDeclaredIdentifiers(program).forEach(id =>
+  getIdentifiersDeclaredByProgram(program).forEach(id =>
     context.nativeStorage.previousProgramsIdentifiers.add(id)
   )
   const newStatements = [
@@ -486,7 +477,7 @@ function transpileToFullJS(
     ...getIdentifiersInNativeStorage(context.nativeStorage)
   ])
 
-  const globalIds = getNativeIds(program, usedIdentifiers)
+  const globalIds = getNativeIds(usedIdentifiers)
   checkForUndefinedVariables(program, context, globalIds, skipUndefined)
 
   const [importNodes, otherNodes] = transformImportDeclarations(
@@ -498,7 +489,7 @@ function transpileToFullJS(
   getFunctionDeclarationNamesInProgram(program).forEach(id =>
     context.nativeStorage.previousProgramsIdentifiers.add(id)
   )
-  getGloballyDeclaredIdentifiers(program).forEach(id =>
+  getIdentifiersDeclaredByProgram(program).forEach(id =>
     context.nativeStorage.previousProgramsIdentifiers.add(id)
   )
   const transpiledProgram: es.Program = create.program([

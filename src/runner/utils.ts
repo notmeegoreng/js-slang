@@ -31,7 +31,7 @@ export function determineVariant(context: Context, options: RecursivePartial<IOp
 export function determineExecutionMethod(
   theOptions: IOptions,
   context: Context,
-  program: Program,
+  programs: Record<string, Program>,
   verboseErrors: boolean
 ): void {
   if (theOptions.executionMethod !== 'auto') {
@@ -44,39 +44,20 @@ export function determineExecutionMethod(
   }
 
   let isNativeRunnable
-  if (verboseErrors) {
-    isNativeRunnable = false
-  } else if (areBreakpointsSet()) {
+  if (verboseErrors || areBreakpointsSet()) {
     isNativeRunnable = false
   } else if (theOptions.executionMethod === 'auto') {
-    if (context.executionMethod === 'auto') {
-      if (verboseErrors) {
-        isNativeRunnable = false
-      } else if (areBreakpointsSet()) {
-        isNativeRunnable = false
-      } else {
-        let hasDebuggerStatement = false
-        simple(program, {
-          DebuggerStatement(node: DebuggerStatement) {
-            hasDebuggerStatement = true
-          }
-        })
-        isNativeRunnable = !hasDebuggerStatement
-      }
-      context.executionMethod = isNativeRunnable ? 'native' : 'cse-machine'
-    } else {
-      isNativeRunnable = context.executionMethod === 'native'
-    }
-  } else {
-    let hasDebuggerStatement = false
-    simple(program, {
-      DebuggerStatement(_node: DebuggerStatement) {
-        hasDebuggerStatement = true
-      }
-    })
-    isNativeRunnable = !hasDebuggerStatement
-  }
+    for (const program of Object.values(programs)) {
+      isNativeRunnable = true
+      simple(program, {
+        DebuggerStatement(node: DebuggerStatement) {
+          isNativeRunnable = false
+        }
+      })
 
+      if (!isNativeRunnable) break
+    }
+  }
   context.executionMethod = isNativeRunnable ? 'native' : 'cse-machine'
 }
 

@@ -1,19 +1,15 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { generate } from 'astring'
 import type es from 'estree'
-import { RawSourceMap } from 'source-map'
+import { RawSourceMap, SourceMapGenerator } from 'source-map'
 
 import type { Result } from '..'
 import { NATIVE_STORAGE_ID } from '../constants'
 import { RuntimeSourceError } from '../errors/runtimeSourceError'
 import type { ImportOptions } from '../modules/moduleTypes'
 import { parse } from '../parser/parser'
-import {
-  evallerReplacer,
-  getBuiltins,
-  getGloballyDeclaredIdentifiers,
-  transpile
-} from '../transpiler/transpiler'
+import { evallerReplacer, getBuiltins } from '../transpiler/transpiler'
+import { getIdentifiersDeclaredByProgram } from '../utils/ast/helpers'
 import type { Context, NativeStorage } from '../types'
 import * as create from '../utils/ast/astCreator'
 import { getFunctionDeclarationNamesInProgram } from '../utils/uniqueIds'
@@ -69,16 +65,21 @@ export async function fullJSRunner(
   getFunctionDeclarationNamesInProgram(preEvalProgram).forEach(id =>
     context.nativeStorage.previousProgramsIdentifiers.add(id)
   )
-  getGloballyDeclaredIdentifiers(preEvalProgram).forEach(id =>
+  getIdentifiersDeclaredByProgram(preEvalProgram).forEach(id =>
     context.nativeStorage.previousProgramsIdentifiers.add(id)
   )
   const preEvalCode: string = generate(preEvalProgram)
   await fullJSEval(preEvalCode, context.nativeStorage)
 
-  let transpiled
+  let transpiled: string
   let sourceMapJson: RawSourceMap | undefined
   try {
-    ;({ transpiled, sourceMapJson } = transpile(program, context))
+    const sourceMapGenerator = new SourceMapGenerator()
+    transpiled = generate(program, { sourceMapGenerator })
+    console.log(transpiled)
+
+    sourceMapJson = sourceMapGenerator.toJSON()
+
     return {
       status: 'finished',
       context,

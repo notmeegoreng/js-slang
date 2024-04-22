@@ -1,16 +1,16 @@
 import type es from 'estree'
 
 import createContext from '../createContext'
-import { parse } from '../parser/parser'
 import * as stdList from '../stdlib/list'
 import { Chapter, Variant, type NativeStorage } from '../types'
 import * as create from '../utils/ast/astCreator'
+import { parse } from '../parser/parser'
 import { checkForInfiniteLoop } from './detect'
 import { InfiniteLoopError } from './errors'
 import {
   InfiniteLoopRuntimeFunctions as FunctionNames,
   InfiniteLoopRuntimeObjectNames,
-  instrument
+  instrument,
 } from './instrument'
 import * as st from './state'
 import * as sym from './symbolic'

@@ -3,6 +3,9 @@ import * as es from 'estree'
 import * as create from '../utils/ast/astCreator'
 import { getIdentifiersInProgram } from '../utils/uniqueIds'
 import { simple } from '../utils/walkers'
+import { transpileFileToSource, type FileTranspiler } from '../transpiler/sourceTranspiler'
+import { getNativeTranspiler, transpileFilesToSource } from '../transpiler/transpileBundler'
+import type { Bundler } from '../modules/preprocessor/bundler'
 
 const lazyPrimitives = new Set(['makeLazyFunction', 'wrapLazyCallee', 'forceIt', 'delayIt'])
 
@@ -95,6 +98,45 @@ function insertDelayAndForce(program: es.Program) {
       )
     }
   })
+}
+
+const lazyFileTranspiler: FileTranspiler = (program, context, nativeId, isEntrypoint) => {
+  transformFunctionDeclarationsToArrowFunctions(program)
+  insertDelayAndForce(program)
+  return transpileFileToSource(program, context, nativeId, isEntrypoint)
+}
+
+const lazyFilesTranspiler = getNativeTranspiler(lazyFileTranspiler, true)
+
+export const transpileFilesToLazy: Bundler = (linkerSuccess, context) => {
+  const isManual = Object.values(linkerSuccess.programs).find(program => {
+    const identifiers = getIdentifiersInProgram(program)
+    return identifiers.has('forceIt') || identifiers.has('delayIt')
+  })
+
+  if (isManual) {
+    const outputProgram = transpileFilesToSource(linkerSuccess, context)
+    if (!outputProgram) return undefined
+
+    outputProgram.body.unshift(
+      create.expressionStatement(
+        create.callExpression(
+          create.identifier('display'),
+          [
+            create.literal(
+              'Manual use of lazy library detected, turning off automatic lazy evaluation transformation.'
+            )
+          ],
+          {
+            start: { line: 0, column: 0 },
+            end: { line: 0, column: 0 }
+          }
+        )
+      )
+    )
+  }
+
+  return lazyFilesTranspiler(linkerSuccess, context)
 }
 
 // transpiles if possible and modifies program to a Source program that makes use of lazy primitives

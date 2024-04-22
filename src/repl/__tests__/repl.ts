@@ -246,5 +246,15 @@ describe('Test repl command', () => {
         ]
       )
     })
+
+    test('REPL is able to access preludes and builtins', () =>
+      runRepl(
+        [],
+        [
+          ['pair(0,0);', '[0, 0]'],
+          ['math_PI;', '3.141592653589793'],
+          ['map(x => x + 1, list(1,2,3));', '[2, [3, [4, null]]]']
+        ]
+      ))
   })
 })

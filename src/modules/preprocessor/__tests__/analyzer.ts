@@ -14,7 +14,7 @@ import { mockContext } from '../../../mocks/context'
 import type { Program } from 'estree'
 import loadSourceModules from '../../loader'
 import type { SourceFiles as Files } from '../../moduleTypes'
-import { objectKeys } from '../../../utils/misc'
+import { mapObject, objectKeys } from '../../../utils/misc'
 
 jest.mock('../../loader/loaders')
 
@@ -68,12 +68,18 @@ describe('Test throwing import validation errors', () => {
     }
 
     const { programs, topoOrder, sourceModulesToImport } = importGraphResult
-    await loadSourceModules(sourceModulesToImport, context, false)
 
-    analyzeImportsAndExports(programs, entrypointFilePath as string, topoOrder, context, {
-      allowUndefinedImports,
-      throwOnDuplicateNames
-    })
+    const loadedModules = await loadSourceModules(sourceModulesToImport, context, false)
+    const moduleDocs = mapObject(loadedModules, (_, values) => new Set(Object.keys(values)))
+
+    analyzeImportsAndExports(
+      { programs, entrypointFilePath: entrypointFilePath as string, topoOrder },
+      moduleDocs,
+      {
+        allowUndefinedImports,
+        throwOnDuplicateNames
+      }
+    )
     return true
   }
 
@@ -712,10 +718,15 @@ describe('Test throwing DuplicateImportNameErrors', () => {
       const context = createContext(Chapter.FULL_JS)
       const [entrypointFilePath, ...topoOrder] = objectKeys(programs)
 
-      await loadSourceModules(new Set(['one_module', 'another_module']), context, false)
+      const loadedModules = await loadSourceModules(
+        new Set(['one_module', 'another_module']),
+        context,
+        false
+      )
+      const moduleDocs = mapObject(loadedModules, (_, values) => new Set(Object.values(values)))
 
       const runTest = () =>
-        analyzeImportsAndExports(programs, entrypointFilePath, topoOrder, context, {
+        analyzeImportsAndExports({ programs, entrypointFilePath, topoOrder }, moduleDocs, {
           allowUndefinedImports: true,
           throwOnDuplicateNames: shouldThrow
         })

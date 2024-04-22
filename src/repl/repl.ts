@@ -62,10 +62,8 @@ export const getReplCommand = () =>
           fileGetter,
           entrypointFilePath,
           context,
-          {
-            ...options,
-            shouldAddFileName: true
-          }
+          options,
+          true
         )
 
         const toLog = handleResult(result, context, verbose ?? verboseErrors)
@@ -89,7 +87,6 @@ export const getReplCommand = () =>
             if (output instanceof Error) {
               return output.message
             }
-
             return handleResult(output.result, context, verbose ?? output.verboseErrors)
           }
         }

@@ -13,6 +13,8 @@ import {
   NativeIds
 } from '../utils/uniqueIds'
 import { ancestor, base, FullWalkerCallback } from '../utils/walkers'
+import { getIdsFromDeclaration } from '../utils/ast/helpers'
+import { isDeclaration, isModuleDeclaration } from '../utils/ast/typeGuards'
 
 class Declaration {
   public accessedBeforeDeclaration: boolean = false
@@ -158,7 +160,7 @@ export function checkProgramForUndefinedVariables(program: es.Program, context: 
     ...getIdentifiersInProgram(program),
     ...getIdentifiersInNativeStorage(context.nativeStorage)
   ])
-  const globalIds = getNativeIds(program, usedIdentifiers)
+  const globalIds = getNativeIds(usedIdentifiers)
   return checkForUndefinedVariables(program, context, globalIds, false)
 }
 
@@ -179,22 +181,13 @@ export function checkForUndefinedVariables(
   function processBlock(node: es.Program | es.BlockStatement) {
     const identifiers = new Set<string>()
     for (const statement of node.body) {
-      if (statement.type === 'VariableDeclaration') {
-        identifiers.add((statement.declarations[0].id as es.Identifier).name)
-      } else if (statement.type === 'FunctionDeclaration') {
-        if (statement.id === null) {
-          throw new Error(
-            'Encountered a FunctionDeclaration node without an identifier. This should have been caught when parsing.'
-          )
-        }
-        identifiers.add(statement.id.name)
-      } else if (statement.type === 'ImportDeclaration') {
-        for (const specifier of statement.specifiers) {
-          identifiers.add(specifier.local.name)
-        }
+      if (!isDeclaration(statement) && !isModuleDeclaration(statement)) continue
+
+      if (statement.type !== 'ExportAllDeclaration') {
+        getIdsFromDeclaration(statement).forEach(({ name }) => identifiers.add(name))
       }
+      identifiersIntroducedByNode.set(node, identifiers)
     }
-    identifiersIntroducedByNode.set(node, identifiers)
   }
   function processFunction(
     node: es.FunctionDeclaration | es.ArrowFunctionExpression,
