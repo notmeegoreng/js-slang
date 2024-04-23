@@ -8,16 +8,10 @@ import {
   getModuleDeclarationSource
 } from '../utils/ast/helpers'
 import * as ast from '../utils/ast/astCreator'
-import {
-  getIdentifiersInNativeStorage,
-  getIdentifiersInProgram,
-  getUniqueId
-} from '../utils/uniqueIds'
+import { getIdentifiersInNativeStorage, getUniqueId } from '../utils/uniqueIds'
 import { NATIVE_STORAGE_ID } from '../constants'
 import type { LinkerSuccess } from '../modules/preprocessor/linker'
-import { parse } from '../parser/parser'
-import assert from '../utils/assert'
-import type { Bundler } from '../modules/preprocessor/bundler'
+import { checkForUndefinedVariables } from '../validator/validator'
 import { evallerReplacer } from './transpiler'
 import {
   transpileFileToSource as sourceFileTranspiler,
@@ -36,6 +30,25 @@ function processModuleDeclarations(
   return statements.reduce(
     ([newNodes, pairs], node) => {
       if (!isModuleDeclaration(node)) {
+        if (node.type === 'TryStatement') {
+          // To make this work with the infinite loop detector
+          const [newTryBlock, blockExports] = processModuleDeclarations(node.block.body, nativeId)
+          const [newFinalizerBlock, finalizerExports] = node.finalizer
+            ? processModuleDeclarations(node.finalizer.body, nativeId)
+            : [[], []]
+
+          const newTry: es.TryStatement = {
+            ...node,
+            block: ast.blockStatement(newTryBlock),
+            finalizer: ast.blockStatement(newFinalizerBlock)
+          }
+
+          return [
+            [...newNodes, newTry],
+            [...pairs, ...blockExports, ...finalizerExports]
+          ]
+        }
+
         return [[...newNodes, node], pairs]
       }
 
@@ -118,14 +131,10 @@ function processModuleDeclarations(
   )
 }
 
-function getBuiltinsAndPrelude(
-  globalNativeId: es.Identifier,
-  evaluatePrelude: boolean,
-  context: Context
-): [es.Program['body'], es.Program | null] {
+function getBuiltins(globalNativeId: es.Identifier, context: Context): es.Program['body'] {
   const newStatements: es.VariableDeclaration[] = []
   // Only if we haven't evaluated any code before
-  // do we try to evaluate builtins and the prelude
+  // do we try to evaluate builtins
   if (context.nativeStorage.evaller === null) {
     for (const builtin of context.nativeStorage.builtins.keys()) {
       newStatements.push(
@@ -138,37 +147,42 @@ function getBuiltinsAndPrelude(
         )
       )
     }
-
-    if (evaluatePrelude && context.prelude !== null) {
-      const prelude = parse(context.prelude, context)
-      assert(prelude !== null, 'Prelude should not have parser errors')
-      return [newStatements, prelude]
-    }
   }
-  return [newStatements, null]
+
+  // Just in case anyone is wondering why we don't just evaluate the user program and
+  // prelude at the same time:
+  // If we do, the line numbers for the errors that get become wrong, because then the
+  // program starts at the prelude, not with the user's program
+  return newStatements
 }
 
 function transpileFiles(
-  { programs, entrypointFilePath, topoOrder }: Pick<LinkerSuccess, 'programs' | 'entrypointFilePath' | 'topoOrder'>,
+  {
+    programs,
+    entrypointFilePath,
+    topoOrder
+  }: Pick<LinkerSuccess, 'programs' | 'entrypointFilePath' | 'topoOrder'>,
   context: Context,
-  evaluatePrelude: boolean,
-  fileTranspiler: FileTranspiler
+  fileTranspiler: FileTranspiler,
+  skipUndefined: boolean
 ): es.Program | undefined {
   try {
     const entrypointProgram = programs[entrypointFilePath]
 
-    const globalIdentifiers = new Set([
-      ...getIdentifiersInNativeStorage(context.nativeStorage),
-      ...getIdentifiersInProgram(entrypointProgram)
-    ])
+    // const globalIdentifiers = new Set([
+    //   ...getIdentifiersInNativeStorage(context.nativeStorage),
+    //   ...getIdentifiersInProgram(entrypointProgram)
+    // ])
 
-    const globalNativeId = ast.identifier(getUniqueId(globalIdentifiers, NATIVE_STORAGE_ID))
+    const globalNativeId = ast.identifier(NATIVE_STORAGE_ID)
 
     function transpileSingleFile(
       fileName: string,
       nativeId: es.Identifier | null,
       isEntrypoint: boolean
     ) {
+      checkForUndefinedVariables(programs[fileName], context, {} as any, skipUndefined)
+
       const usedIdentifiers = new Set([
         ...getIdentifiersInNativeStorage(context.nativeStorage),
         ...getIdentifiersDeclaredByProgram(programs[fileName])
@@ -176,11 +190,12 @@ function transpileFiles(
 
       const localNativeId =
         nativeId ?? ast.identifier(getUniqueId(usedIdentifiers, NATIVE_STORAGE_ID))
+
       const [internalsCode, userCode] = fileTranspiler(
         programs[fileName],
         context,
         localNativeId,
-        false
+        isEntrypoint
       )
 
       const [newBody, exportEntries] = processModuleDeclarations(userCode, localNativeId)
@@ -222,7 +237,7 @@ function transpileFiles(
       ])
     }
 
-    const [builtins, prelude] = getBuiltinsAndPrelude(globalNativeId, evaluatePrelude, context)
+    const builtins = getBuiltins(globalNativeId, context)
     const transpiledPrograms = topoOrder
       .filter(fileName => fileName !== entrypointFilePath)
       .map(fileName => transpileSingleFile(fileName, null, false))
@@ -232,12 +247,12 @@ function transpileFiles(
       context.nativeStorage.previousProgramsIdentifiers.add(name)
     )
 
-    if (prelude) {
-      getIdentifiersDeclaredByProgram(prelude).forEach(name =>
-        context.nativeStorage.previousProgramsIdentifiers.add(name)
-      )
-      prelude.body.forEach(stmt => builtins.push(stmt))
-    }
+    // if (prelude) {
+    //   getIdentifiersDeclaredByProgram(prelude).forEach(name =>
+    //     context.nativeStorage.previousProgramsIdentifiers.add(name)
+    //   )
+    //   prelude.body.forEach(stmt => builtins.push(stmt))
+    // }
 
     return ast.program([...builtins, ...transpiledPrograms, entrypointTranspiled])
   } catch (error) {
@@ -246,9 +261,17 @@ function transpileFiles(
   }
 }
 
-export const getNativeTranspiler =
-  (fileTranspiler: FileTranspiler, evaluatePrelude: boolean): Bundler =>
-  (linker, context) => transpileFiles(linker, context, evaluatePrelude, fileTranspiler)
+export type NativeBundler = (
+  res: Pick<LinkerSuccess, 'entrypointFilePath' | 'topoOrder' | 'programs'>,
+  context: Context,
+  skipUndefined?: boolean
+) => es.Program | undefined
 
-export const transpileFilesToSource = getNativeTranspiler(sourceFileTranspiler, true)
-export const transpileFilesToFullJS = getNativeTranspiler(prog => [[], prog.body], false)
+export function getNativeTranspiler(fileTranspiler: FileTranspiler) {
+  const filesTranspiler: NativeBundler = (linker, context, skipUndefined: boolean = false) =>
+    transpileFiles(linker, context, fileTranspiler, skipUndefined)
+  return filesTranspiler
+}
+
+export const transpileFilesToSource = getNativeTranspiler(sourceFileTranspiler)
+export const transpileFilesToFullJS = getNativeTranspiler(prog => [[], prog.body])

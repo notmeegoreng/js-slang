@@ -1,18 +1,28 @@
-import { generate } from 'astring'
 import type es from 'estree'
+import { getNativeTranspiler } from '../transpiler/transpileBundler'
 
-import { transformImportDeclarations } from '../transpiler/transpiler'
 import type { Node } from '../types'
 import * as create from '../utils/ast/astCreator'
 import { recursive, simple, WalkerCallback } from '../utils/walkers'
-import { getIdsFromDeclaration } from '../utils/ast/helpers'
-// transforms AST of program
+import { getUniqueId } from '../utils/uniqueIds'
+import * as stdList from '../stdlib/list'
+import * as sym from './symbolic'
+import * as st from './state'
 
-const globalIds = {
+// const globalIds = {
+//   builtinsId: 'builtins',
+//   functionsId: '__InfLoopFns',
+//   stateId: '__InfLoopState',
+//   modulesId: '__modules'
+// }
+export const instrumenterInternals = {
   builtinsId: 'builtins',
   functionsId: '__InfLoopFns',
-  stateId: '__InfLoopState',
-  modulesId: '__modules'
+  stateId: '__InfLoopState'
+}
+
+type InstrumenterIDs = {
+  [K in keyof typeof instrumenterInternals]: es.Identifier
 }
 
 enum FunctionNames {
@@ -40,10 +50,10 @@ enum FunctionNames {
  * E.g. "function f(f)..." -> "function f_0(f_1)..."
  * @param predefined A table of [key: string, value:string], where variables named 'key' will be renamed to 'value'
  */
-function unshadowVariables(program: Node, predefined = {}) {
-  for (const name of Object.values(globalIds)) {
-    predefined[name] = name
-  }
+function unshadowVariables(program: Node, globalIds: InstrumenterIDs, predefined = {}) {
+  // for (const name of Object.values(globalIds)) {
+  //   predefined[name] = name
+  // }
   const seenIds = new Set()
   const env = [predefined]
   const genId = (name: string) => {
@@ -133,7 +143,7 @@ function unshadowVariables(program: Node, predefined = {}) {
       } else {
         create.mutateToMemberExpression(
           node,
-          create.identifier(globalIds.functionsId),
+          globalIds.functionsId,
           create.literal(FunctionNames.nothingFunction)
         )
         ;(node as any).computed = true
@@ -173,8 +183,8 @@ export function getOriginalName(name: string) {
   return name.slice(0, cutAt)
 }
 
-function callFunction(fun: FunctionNames) {
-  return create.memberExpression(create.identifier(globalIds.functionsId), fun)
+function callFunction(fun: FunctionNames, globalIds: InstrumenterIDs) {
+  return create.memberExpression(globalIds.functionsId, fun)
 }
 
 /**
@@ -184,16 +194,17 @@ function callFunction(fun: FunctionNames) {
  * Ensures we do not test functions passed as arguments
  * for infinite loops.
  */
-function wrapCallArguments(program: es.Program) {
+function wrapCallArguments(program: es.Program, globalIds: InstrumenterIDs) {
   simple(program, {
     CallExpression(node: es.CallExpression) {
       if (node.callee.type === 'MemberExpression') return
-      for (const arg of node.arguments) {
-        create.mutateToCallExpression(arg, callFunction(FunctionNames.wrapArg), [
-          { ...(arg as es.Expression) },
-          create.identifier(globalIds.stateId)
+
+      node.arguments = node.arguments.map(arg =>
+        create.callExpression(callFunction(FunctionNames.wrapArg, globalIds), [
+          arg,
+          globalIds.stateId
         ])
-      }
+      )
     }
   })
 }
@@ -202,11 +213,11 @@ function wrapCallArguments(program: es.Program) {
  * Turn all "is_null(x)" calls to "is_null(x, stateId)" to
  * facilitate checking of infinite streams in stream mode.
  */
-function addStateToIsNull(program: es.Program) {
+function addStateToIsNull(program: es.Program, globalIds: InstrumenterIDs) {
   simple(program, {
     CallExpression(node: es.CallExpression) {
       if (node.callee.type === 'Identifier' && node.callee.name === 'is_null_0') {
-        node.arguments.push(create.identifier(globalIds.stateId))
+        node.arguments.push(globalIds.stateId)
       }
     }
   })
@@ -235,11 +246,11 @@ function transformLogicalExpressions(program: es.Program) {
  * Changes -ary operations to functions that accept hybrid values as arguments.
  * E.g. "1+1" -> "functions.evalB('+',1,1)"
  */
-function hybridizeBinaryUnaryOperations(program: Node) {
+function hybridizeBinaryUnaryOperations(program: Node, globalIds: InstrumenterIDs) {
   simple(program, {
     BinaryExpression(node: es.BinaryExpression) {
       const { operator, left, right } = node
-      create.mutateToCallExpression(node, callFunction(FunctionNames.evalB), [
+      create.mutateToCallExpression(node, callFunction(FunctionNames.evalB, globalIds), [
         create.literal(operator),
         left,
         right
@@ -247,7 +258,7 @@ function hybridizeBinaryUnaryOperations(program: Node) {
     },
     UnaryExpression(node: es.UnaryExpression) {
       const { operator, argument } = node as es.UnaryExpression
-      create.mutateToCallExpression(node, callFunction(FunctionNames.evalU), [
+      create.mutateToCallExpression(node, callFunction(FunctionNames.evalU, globalIds), [
         create.literal(operator),
         argument
       ])
@@ -255,20 +266,20 @@ function hybridizeBinaryUnaryOperations(program: Node) {
   })
 }
 
-function hybridizeVariablesAndLiterals(program: Node) {
+function hybridizeVariablesAndLiterals(program: Node, globalIds: InstrumenterIDs) {
   recursive(program, true, {
     Identifier(node: es.Identifier, state: boolean, _callback: WalkerCallback<boolean>) {
       if (state) {
-        create.mutateToCallExpression(node, callFunction(FunctionNames.hybridize), [
+        create.mutateToCallExpression(node, callFunction(FunctionNames.hybridize, globalIds), [
           create.identifier(node.name),
           create.literal(node.name),
-          create.identifier(globalIds.stateId)
+          globalIds.stateId
         ])
       }
     },
     Literal(node: es.Literal, state: boolean, _callback: WalkerCallback<boolean>) {
       if (state && (typeof node.value === 'boolean' || typeof node.value === 'number')) {
-        create.mutateToCallExpression(node, callFunction(FunctionNames.dummify), [
+        create.mutateToCallExpression(node, callFunction(FunctionNames.dummify, globalIds), [
           create.literal(node.value)
         ])
       }
@@ -281,14 +292,21 @@ function hybridizeVariablesAndLiterals(program: Node) {
     },
     MemberExpression(node: es.MemberExpression, state: boolean, callback: WalkerCallback<boolean>) {
       if (!node.computed) return
+
       callback(node.object, false)
       callback(node.property, false)
-      create.mutateToCallExpression(node.object, callFunction(FunctionNames.concretize), [
-        { ...node.object } as es.Expression
-      ])
-      create.mutateToCallExpression(node.property, callFunction(FunctionNames.concretize), [
-        { ...node.property } as es.Expression
-      ])
+
+      node.object = create.callExpression(
+        callFunction(FunctionNames.concretize, globalIds),
+        [node.object as es.Expression],
+        node.loc
+      )
+
+      node.property = create.callExpression(
+        callFunction(FunctionNames.concretize, globalIds),
+        [node.property as es.Expression],
+        node.loc
+      )
     }
   })
 }
@@ -301,17 +319,17 @@ function hybridizeVariablesAndLiterals(program: Node) {
  * For assignments to elements of arrays we concretize the RHS.
  * E.g. "a[1] = y;" -> "a[1] = concretize(y);"
  */
-function trackVariableAssignment(program: Node) {
+function trackVariableAssignment(program: Node, globalIds: InstrumenterIDs) {
   simple(program, {
     AssignmentExpression(node: es.AssignmentExpression) {
       if (node.left.type === 'Identifier') {
-        node.right = create.callExpression(callFunction(FunctionNames.saveVar), [
+        node.right = create.callExpression(callFunction(FunctionNames.saveVar, globalIds), [
           node.right,
           create.literal(node.left.name),
-          create.identifier(globalIds.stateId)
+          globalIds.stateId
         ])
       } else if (node.left.type === 'MemberExpression') {
-        node.right = create.callExpression(callFunction(FunctionNames.concretize), [
+        node.right = create.callExpression(callFunction(FunctionNames.concretize, globalIds), [
           { ...node.right }
         ])
       }
@@ -326,14 +344,15 @@ function trackVariableAssignment(program: Node) {
  * saveBool should return the result of "x === 0"
  */
 function saveTheTest(
-  node: es.IfStatement | es.ConditionalExpression | es.WhileStatement | es.ForStatement
+  node: es.IfStatement | es.ConditionalExpression | es.WhileStatement | es.ForStatement,
+  globalIds: InstrumenterIDs
 ) {
   if (node.test === null || node.test === undefined) {
     return
   }
-  const newTest = create.callExpression(callFunction(FunctionNames.saveBool), [
+  const newTest = create.callExpression(callFunction(FunctionNames.saveBool, globalIds), [
     node.test,
-    create.identifier(globalIds.stateId)
+    globalIds.stateId
   ])
   node.test = newTest
 }
@@ -360,8 +379,9 @@ function inPlaceEnclose(node: es.Statement, prepend?: es.Statement, append?: es.
 /**
  * Add tracking to if statements and conditional expressions in the state using saveTheTest.
  */
-function trackIfStatements(program: Node) {
-  const theFunction = (node: es.IfStatement | es.ConditionalExpression) => saveTheTest(node)
+function trackIfStatements(program: Node, globalIds: InstrumenterIDs) {
+  const theFunction = (node: es.IfStatement | es.ConditionalExpression) =>
+    saveTheTest(node, globalIds)
   simple(program, { IfStatement: theFunction, ConditionalExpression: theFunction })
 }
 
@@ -376,13 +396,14 @@ function trackIfStatements(program: Node) {
  *          exitLoop(state);"
  * Where postLoop should return the value of its (optional) second argument.
  */
-function trackLoops(program: Node) {
+function trackLoops(program: Node, globalIds: InstrumenterIDs) {
   const makeCallStatement = (name: FunctionNames, args: es.Expression[]) =>
-    create.expressionStatement(create.callExpression(callFunction(name), args))
-  const stateExpr = create.identifier(globalIds.stateId)
+    create.expressionStatement(create.callExpression(callFunction(name, globalIds), args))
+  const stateExpr = globalIds.stateId
+
   simple(program, {
     WhileStatement: (node: es.WhileStatement) => {
-      saveTheTest(node)
+      saveTheTest(node, globalIds)
       inPlaceEnclose(node.body, undefined, makeCallStatement(FunctionNames.postLoop, [stateExpr]))
       inPlaceEnclose(
         node,
@@ -391,9 +412,9 @@ function trackLoops(program: Node) {
       )
     },
     ForStatement: (node: es.ForStatement) => {
-      saveTheTest(node)
+      saveTheTest(node, globalIds)
       const theUpdate = node.update ? node.update : create.identifier('undefined')
-      node.update = create.callExpression(callFunction(FunctionNames.postLoop), [
+      node.update = create.callExpression(callFunction(FunctionNames.postLoop, globalIds), [
         stateExpr,
         theUpdate
       ])
@@ -418,7 +439,7 @@ function trackLoops(program: Node) {
  *         }"
  * where returnFunction should return its first argument 'x'.
  */
-function trackFunctions(program: Node) {
+function trackFunctions(program: Node, globalIds: InstrumenterIDs) {
   const preFunction = (name: string, params: es.Pattern[]) => {
     const args = params
       .filter(x => x.type === 'Identifier')
@@ -426,10 +447,10 @@ function trackFunctions(program: Node) {
       .map(x => create.arrayExpression([create.literal(x), create.identifier(x)]))
 
     return create.expressionStatement(
-      create.callExpression(callFunction(FunctionNames.preFunction), [
+      create.callExpression(callFunction(FunctionNames.preFunction, globalIds), [
         create.literal(name),
         create.arrayExpression(args),
-        create.identifier(globalIds.stateId)
+        globalIds.stateId
       ])
     )
   }
@@ -458,21 +479,23 @@ function trackFunctions(program: Node) {
     ReturnStatement(node: es.ReturnStatement) {
       const hasNoArgs = node.argument === null || node.argument === undefined
       const arg = hasNoArgs ? create.identifier('undefined') : (node.argument as es.Expression)
-      const argsForCall = [arg, create.identifier(globalIds.stateId)]
-      node.argument = create.callExpression(callFunction(FunctionNames.returnFunction), argsForCall)
+      const argsForCall = [arg, globalIds.stateId]
+      node.argument = create.callExpression(
+        callFunction(FunctionNames.returnFunction, globalIds),
+        argsForCall
+      )
     }
   })
 }
 
-function builtinsToStmts(builtins: Iterable<string>) {
+function builtinsToStmts(builtins: Iterable<string>, globalIds: InstrumenterIDs) {
   const makeDecl = (name: string) =>
     create.declaration(
       name,
       'const',
-      create.callExpression(
-        create.memberExpression(create.identifier(globalIds.builtinsId), 'get'),
-        [create.literal(name)]
-      )
+      create.callExpression(create.memberExpression(globalIds.builtinsId, 'get'), [
+        create.literal(name)
+      ])
     )
   return [...builtins].map(makeDecl)
 }
@@ -541,10 +564,10 @@ function savePositionAsExpression(loc: es.SourceLocation | undefined | null) {
  * E.g. "f(x);" -> "trackLoc({position object}, state, ()=>f(x))".
  * where trackLoc should return the result of "(()=>f(x))();".
  */
-function trackLocations(program: es.Program) {
+function trackLocations(program: es.Program, globalIds: InstrumenterIDs) {
   // Note: only add locations for most recently entered code
-  const trackerFn = callFunction(FunctionNames.trackLoc)
-  const stateExpr = create.identifier(globalIds.stateId)
+  const trackerFn = callFunction(FunctionNames.trackLoc, globalIds)
+  const stateExpr = globalIds.stateId
   const doLoops = (
     node: es.ForStatement | es.WhileStatement,
     _state: undefined,
@@ -577,70 +600,169 @@ function trackLocations(program: es.Program) {
   })
 }
 
-function handleImports(programs: es.Program[]): string[] {
-  const imports = programs.flatMap(program => {
-    const [importsToAdd, otherNodes] = transformImportDeclarations(
-      program,
-      create.identifier(globalIds.modulesId)
-    )
-    program.body = [...importsToAdd, ...otherNodes]
-    return importsToAdd.flatMap(decl => {
-      const ids = getIdsFromDeclaration(decl)
-      return ids.map(id => id.name)
-    })
-  })
+function returnInvalidIfNumeric(val: any, validity = sym.Validity.NoSmt) {
+  if (typeof val === 'number') {
+    const result = sym.makeDummyHybrid(val)
+    result.validity = validity
+    return result
+  } else {
+    return val
+  }
+}
 
-  return [...new Set<string>(imports)]
+const builtinSpecialCases = {
+  is_null(maybeHybrid: any, state?: st.State) {
+    const xs = sym.shallowConcretize(maybeHybrid)
+    const conc = stdList.is_null(xs)
+    const theTail = stdList.is_pair(xs) ? xs[1] : undefined
+    const isStream = typeof theTail === 'function'
+    if (state && isStream) {
+      const lastFunction = state.getLastFunctionName()
+      if (state.streamMode === true && state.streamLastFunction === lastFunction) {
+        // heuristic to make sure we are at the same is_null call
+        testIfInfiniteStream(sym.shallowConcretize(theTail()), state)
+      } else {
+        let count = state.streamCounts.get(lastFunction)
+        if (count === undefined) {
+          count = 1
+        }
+        if (count > state.streamThreshold) {
+          state.streamMode = true
+          state.streamLastFunction = lastFunction
+        }
+        state.streamCounts.set(lastFunction, count + 1)
+      }
+    } else {
+      return conc
+    }
+    return
+  },
+  // mimic behaviour without printing
+  display: (...x: any[]) => x[0],
+  display_list: (...x: any[]) => x[0]
 }
 
 /**
- * Instruments the given code with functions that track the state of the program.
- *
- * @param previous programs that were previously executed in the REPL, most recent first (at ix 0).
- * @param program most recent program executed.
- * @param builtins Names of builtin functions.
- * @returns code with instrumentations.
+ * Test if stream is infinite. May destructively change the program
+ * environment. If it is not infinite, throw a timeout error.
  */
-function instrument(
-  previous: es.Program[],
-  program: es.Program,
-  builtins: Iterable<string>
-): string {
-  const { builtinsId, functionsId, stateId } = globalIds
-  const predefined = {}
-  predefined[builtinsId] = builtinsId
-  predefined[functionsId] = functionsId
-  predefined[stateId] = stateId
-  const innerProgram = { ...program }
 
-  const moduleNames = handleImports([program].concat(previous))
-
-  for (const name of moduleNames) {
-    predefined[name] = name
+function testIfInfiniteStream(stream: any, state: st.State) {
+  let next = stream
+  for (let i = 0; i <= state.threshold; i++) {
+    if (stdList.is_null(next)) {
+      break
+    } else {
+      const nextTail = stdList.is_pair(next) ? next[1] : undefined
+      if (typeof nextTail === 'function') {
+        next = sym.shallowConcretize(nextTail())
+      } else {
+        break
+      }
+    }
   }
-  for (const toWrap of previous) {
-    wrapOldCode(program, toWrap.body as es.Statement[])
-  }
-  wrapOldCode(program, builtinsToStmts(builtins))
-  unshadowVariables(program, predefined)
-  transformLogicalExpressions(program)
-  hybridizeBinaryUnaryOperations(program)
-  hybridizeVariablesAndLiterals(program)
-  // tracking functions: add functions to record runtime data.
-
-  trackVariableAssignment(program)
-  trackIfStatements(program)
-  trackLoops(program)
-  trackFunctions(program)
-  trackLocations(innerProgram)
-  addStateToIsNull(program)
-  wrapCallArguments(program)
-
-  return generate(program)
+  throw new Error('timeout')
 }
 
-export {
-  instrument,
-  FunctionNames as InfiniteLoopRuntimeFunctions,
-  globalIds as InfiniteLoopRuntimeObjectNames
+export function prepareBuiltins(oldBuiltins: Map<string, any>) {
+  const nonDetFunctions = ['get_time', 'math_random']
+  const newBuiltins = new Map<string, any>()
+  for (const [name, fun] of oldBuiltins) {
+    const specialCase = builtinSpecialCases[name]
+    if (specialCase !== undefined) {
+      newBuiltins.set(name, specialCase)
+    } else {
+      const functionValidity = nonDetFunctions.includes(name)
+        ? sym.Validity.NoCycle
+        : sym.Validity.NoSmt
+      newBuiltins.set(name, (...args: any[]) => {
+        const validityOfArgs = args.filter(sym.isHybrid).map(x => x.validity)
+        const mostInvalid = Math.max(functionValidity, ...validityOfArgs)
+        return returnInvalidIfNumeric(fun(...args.map(sym.shallowConcretize)), mostInvalid)
+      })
+    }
+  }
+  newBuiltins.set('undefined', undefined)
+  return newBuiltins
 }
+
+const getInstrumenterInternals = (usedIdentifiers: Set<string>) =>
+  Object.entries(instrumenterInternals).reduce(
+    (res, [key, value]) => ({
+      ...res,
+      [key]: create.identifier(getUniqueId(usedIdentifiers, value))
+    }),
+    {} as InstrumenterIDs
+  )
+
+export const transpileFilesToInfiniteLoop = getNativeTranspiler(
+  (program, context, nativeId, isEntrypoint) => {
+    const innerProgram = { ...program }
+    const instrumenterIds = getInstrumenterInternals(new Set())
+    const predefined = {
+      [nativeId.name]: nativeId.name
+    }
+
+    for (const { name } of Object.values(instrumenterIds)) {
+      predefined[name] = name
+    }
+
+    for (const node of program.body) {
+      if (node.type === 'ImportDeclaration') {
+        for (const specifier of node.specifiers) {
+          const { name } = specifier.local
+          predefined[name] = name
+        }
+      }
+    }
+
+    if (isEntrypoint) {
+      const newBuiltins = prepareBuiltins(context.nativeStorage.builtins)
+      for (const toWrap of context.previousPrograms) {
+        wrapOldCode(program, toWrap.body as es.Statement[])
+      }
+      wrapOldCode(program, builtinsToStmts(newBuiltins.keys(), instrumenterIds))
+    }
+
+    unshadowVariables(program, instrumenterIds, predefined)
+    transformLogicalExpressions(program)
+    hybridizeBinaryUnaryOperations(program, instrumenterIds)
+    hybridizeVariablesAndLiterals(program, instrumenterIds)
+    // tracking functions: add functions to record runtime data.
+
+    trackVariableAssignment(program, instrumenterIds)
+    trackIfStatements(program, instrumenterIds)
+    trackLoops(program, instrumenterIds)
+    trackFunctions(program, instrumenterIds)
+    trackLocations(innerProgram, instrumenterIds)
+    addStateToIsNull(program, instrumenterIds)
+    wrapCallArguments(program, instrumenterIds)
+
+    const internalsDeclaration: es.VariableDeclaration = {
+      type: 'VariableDeclaration',
+      kind: 'const',
+      declarations: [
+        {
+          type: 'VariableDeclarator',
+          id: {
+            type: 'ObjectPattern',
+            properties: Object.entries(instrumenterIds).map(([local, declared]) => ({
+              type: 'Property',
+              key: create.identifier(local),
+              value: declared,
+              kind: 'init',
+              method: false,
+              shorthand: false,
+              computed: false
+            }))
+          },
+          init: nativeId
+        }
+      ]
+    }
+
+    return [[internalsDeclaration], program.body]
+  }
+)
+
+export { FunctionNames as InfiniteLoopRuntimeFunctions }

@@ -87,11 +87,6 @@ const OPCODES_STR = {
   [OpCodes.POPENV]: 'POPENV',
   [OpCodes.NEWCP]: 'NEWCP ',
   [OpCodes.NEWCV]: 'NEWCV ',
-  [OpCodes.NEGG]: 'NEGG  ',
-  [OpCodes.NEGF]: 'NEGF  ',
-  [OpCodes.NEQG]: 'NEQG  ',
-  [OpCodes.NEQF]: 'NEQF  ',
-  [OpCodes.NEQB]: 'NEQB  ',
 
   // custom opcodes
   [OpCodes.ARRAY_LEN]: 'ARR_LEN',

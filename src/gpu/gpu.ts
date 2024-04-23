@@ -37,17 +37,21 @@ const gpuFileTranspiler: FileTranspiler = (program, context, nativeId, isEntrypo
     })
   )
 
-  const newProgram = create.program([...gpuDisplayStatements, clearKernelCacheStatement, ...program.body])
+  const newProgram = create.program([
+    ...gpuDisplayStatements,
+    clearKernelCacheStatement,
+    ...program.body
+  ])
   return transpileFileToSource(newProgram, context, nativeId, isEntrypoint)
 }
 
-const gpuFilesTranspiler = getNativeTranspiler(gpuFileTranspiler, true)
+const gpuFilesTranspiler = getNativeTranspiler(gpuFileTranspiler)
 
 // top-level gpu functions that call our code
 export const transpileFilesToGPU: Bundler = (linkerSuccess, context) => {
   const isManual = Object.values(linkerSuccess.programs).find(program => {
     const identifiers = getIdentifiersInProgram(program)
-    return (identifiers.has('__createKernelSource') || identifiers.has('__clearKernelCache'))
+    return identifiers.has('__createKernelSource') || identifiers.has('__clearKernelCache')
   })
 
   if (isManual) {

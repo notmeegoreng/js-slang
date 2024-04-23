@@ -1146,6 +1146,68 @@ Object {
 }
 `;
 
+exports[`Syntaxes are allowed in the chapter they are introduced 10: parse passes 2`] = `
+Object {
+  "alertResult": Array [],
+  "code": "parse(\\"true ? 1 : 2;\\");",
+  "displayResult": Array [],
+  "numErrors": 0,
+  "parsedErrors": "",
+  "result": Array [
+    "conditional_expression",
+    Array [
+      Array [
+        "literal",
+        Array [
+          true,
+          null,
+        ],
+      ],
+      Array [
+        Array [
+          "literal",
+          Array [
+            1,
+            null,
+          ],
+        ],
+        Array [
+          Array [
+            "literal",
+            Array [
+              2,
+              null,
+            ],
+          ],
+          null,
+        ],
+      ],
+    ],
+  ],
+  "resultStatus": "finished",
+  "visualiseListResult": Array [],
+}
+`;
+
+exports[`Syntaxes are allowed in the chapter they are introduced 10: parse passes 3`] = `
+Object {
+  "alertResult": Array [],
+  "code": "parse(\\"null;\\");",
+  "displayResult": Array [],
+  "numErrors": 0,
+  "parsedErrors": "",
+  "result": Array [
+    "literal",
+    Array [
+      null,
+      null,
+    ],
+  ],
+  "resultStatus": "finished",
+  "visualiseListResult": Array [],
+}
+`;
+
 exports[`Syntaxes are allowed in the chapter they are introduced 10: passes 1`] = `
 Object {
   "alertResult": Array [],

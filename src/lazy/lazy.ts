@@ -1,4 +1,5 @@
-import * as es from 'estree'
+import * as _ from 'lodash'
+import type es from 'estree'
 
 import * as create from '../utils/ast/astCreator'
 import { getIdentifiersInProgram } from '../utils/uniqueIds'
@@ -100,13 +101,14 @@ function insertDelayAndForce(program: es.Program) {
   })
 }
 
-const lazyFileTranspiler: FileTranspiler = (program, context, nativeId, isEntrypoint) => {
+const lazyFileTranspiler: FileTranspiler = (rawProgram, context, nativeId, isEntrypoint) => {
+  const program = _.cloneDeep(rawProgram)
   transformFunctionDeclarationsToArrowFunctions(program)
   insertDelayAndForce(program)
   return transpileFileToSource(program, context, nativeId, isEntrypoint)
 }
 
-const lazyFilesTranspiler = getNativeTranspiler(lazyFileTranspiler, true)
+const lazyFilesTranspiler = getNativeTranspiler(lazyFileTranspiler)
 
 export const transpileFilesToLazy: Bundler = (linkerSuccess, context) => {
   const isManual = Object.values(linkerSuccess.programs).find(program => {

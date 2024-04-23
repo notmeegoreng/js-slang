@@ -1,13 +1,16 @@
-import type { Program } from "estree";
-import type { Context } from "..";
-import { Chapter, Variant } from "../types";
-import { transpileFilesToGPU } from "../gpu/gpu";
-import { transpileFilesToLazy } from "../lazy/lazy";
-import type { Bundler } from "../modules/preprocessor/bundler";
-import { transpileFilesToFullJS, transpileFilesToSource } from "./transpileBundler";
+import type { Program } from 'estree'
+import type { Context } from '..'
+import { Chapter, Variant } from '../types'
+import { transpileFilesToGPU } from '../gpu/gpu'
+import { transpileFilesToLazy } from '../lazy/lazy'
+import {
+  transpileFilesToFullJS,
+  transpileFilesToSource,
+  type NativeBundler
+} from './transpileBundler'
 
-export function transpileSingleFile(program: Program, context: Context) {
-  let transpiler: Bundler
+export function transpileSingleFile(program: Program, context: Context, skipUndefined: boolean) {
+  let transpiler: NativeBundler
   if (context.variant === Variant.GPU) {
     transpiler = transpileFilesToGPU
   } else if (context.variant === Variant.LAZY) {
@@ -20,9 +23,13 @@ export function transpileSingleFile(program: Program, context: Context) {
     transpiler = transpileFilesToSource
   }
 
-  return transpiler({
-    programs: { '/default.js': program },
-    entrypointFilePath: '/default.js',
-    topoOrder: []
-  }, context)
+  return transpiler(
+    {
+      programs: { '/default.js': program },
+      entrypointFilePath: '/default.js',
+      topoOrder: []
+    },
+    context,
+    skipUndefined
+  )
 }

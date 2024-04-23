@@ -1,3 +1,4 @@
+import * as _ from 'lodash'
 import type es from 'estree'
 import { generate } from 'astring'
 import * as ast from '../utils/ast/astCreator'
@@ -5,7 +6,6 @@ import type { Context, Node, Chapter } from '../types'
 import { UNKNOWN_LOCATION } from '../constants'
 import { simple } from '../utils/walkers'
 import { getIdentifiersInNativeStorage, getUniqueId } from '../utils/uniqueIds'
-import { checkForUndefinedVariables } from '../validator/validator'
 import { getIdentifiersDeclaredByProgram } from '../utils/ast/helpers'
 
 type Program2 = (es.Statement | es.Declaration)[]
@@ -383,7 +383,8 @@ function getDeclarationsToAccessTranspilerInternals(
   }, [] as es.VariableDeclaration[])
 }
 
-export const transpileFileToSource: FileTranspiler = (program, context, nativeId) => {
+export const transpileFileToSource: FileTranspiler = (rawProgram, context, nativeId) => {
+  const program = _.cloneDeep(rawProgram)
   const usedIdentifiers = new Set([
     ...getIdentifiersInNativeStorage(context.nativeStorage),
     ...getIdentifiersDeclaredByProgram(program)
@@ -399,7 +400,6 @@ export const transpileFileToSource: FileTranspiler = (program, context, nativeId
   transformSomeExpressionsToCheckIfBoolean(program, transpilerInternalIds)
   transformPropertyAssignment(program, transpilerInternalIds)
   transformPropertyAccess(program, transpilerInternalIds)
-  checkForUndefinedVariables(program, context, transpilerInternalIds, false)
   transformFunctionDeclarationsToArrowFunctions(program, functionsToStringMap)
   wrapArrowFunctionsToAllowNormalCallsAndNiceToString(
     program,

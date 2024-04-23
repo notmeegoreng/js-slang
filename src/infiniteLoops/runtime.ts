@@ -1,16 +1,19 @@
 import type es from 'estree'
 
+import { generate } from 'astring'
 import createContext from '../createContext'
-import * as stdList from '../stdlib/list'
-import { Chapter, Variant, type NativeStorage } from '../types'
+import { Chapter, Variant, type Context } from '../types'
 import * as create from '../utils/ast/astCreator'
 import { parse } from '../parser/parser'
+import type { LinkerSuccess } from '../modules/preprocessor/linker'
+import { NATIVE_STORAGE_ID } from '../constants'
+import assert from '../utils/assert'
 import { checkForInfiniteLoop } from './detect'
 import { InfiniteLoopError } from './errors'
 import {
   InfiniteLoopRuntimeFunctions as FunctionNames,
-  InfiniteLoopRuntimeObjectNames,
-  instrument,
+  transpileFilesToInfiniteLoop,
+  prepareBuiltins
 } from './instrument'
 import * as st from './state'
 import * as sym from './symbolic'
@@ -184,91 +187,6 @@ function checkForInfiniteLoopIfMeetsThreshold(
   }
 }
 
-/**
- * Test if stream is infinite. May destructively change the program
- * environment. If it is not infinite, throw a timeout error.
- */
-function testIfInfiniteStream(stream: any, state: st.State) {
-  let next = stream
-  for (let i = 0; i <= state.threshold; i++) {
-    if (stdList.is_null(next)) {
-      break
-    } else {
-      const nextTail = stdList.is_pair(next) ? next[1] : undefined
-      if (typeof nextTail === 'function') {
-        next = sym.shallowConcretize(nextTail())
-      } else {
-        break
-      }
-    }
-  }
-  throw new Error('timeout')
-}
-
-const builtinSpecialCases = {
-  is_null(maybeHybrid: any, state?: st.State) {
-    const xs = sym.shallowConcretize(maybeHybrid)
-    const conc = stdList.is_null(xs)
-    const theTail = stdList.is_pair(xs) ? xs[1] : undefined
-    const isStream = typeof theTail === 'function'
-    if (state && isStream) {
-      const lastFunction = state.getLastFunctionName()
-      if (state.streamMode === true && state.streamLastFunction === lastFunction) {
-        // heuristic to make sure we are at the same is_null call
-        testIfInfiniteStream(sym.shallowConcretize(theTail()), state)
-      } else {
-        let count = state.streamCounts.get(lastFunction)
-        if (count === undefined) {
-          count = 1
-        }
-        if (count > state.streamThreshold) {
-          state.streamMode = true
-          state.streamLastFunction = lastFunction
-        }
-        state.streamCounts.set(lastFunction, count + 1)
-      }
-    } else {
-      return conc
-    }
-    return
-  },
-  // mimic behaviour without printing
-  display: (...x: any[]) => x[0],
-  display_list: (...x: any[]) => x[0]
-}
-
-function returnInvalidIfNumeric(val: any, validity = sym.Validity.NoSmt) {
-  if (typeof val === 'number') {
-    const result = sym.makeDummyHybrid(val)
-    result.validity = validity
-    return result
-  } else {
-    return val
-  }
-}
-
-function prepareBuiltins(oldBuiltins: Map<string, any>) {
-  const nonDetFunctions = ['get_time', 'math_random']
-  const newBuiltins = new Map<string, any>()
-  for (const [name, fun] of oldBuiltins) {
-    const specialCase = builtinSpecialCases[name]
-    if (specialCase !== undefined) {
-      newBuiltins.set(name, specialCase)
-    } else {
-      const functionValidity = nonDetFunctions.includes(name)
-        ? sym.Validity.NoCycle
-        : sym.Validity.NoSmt
-      newBuiltins.set(name, (...args: any[]) => {
-        const validityOfArgs = args.filter(sym.isHybrid).map(x => x.validity)
-        const mostInvalid = Math.max(functionValidity, ...validityOfArgs)
-        return returnInvalidIfNumeric(fun(...args.map(sym.shallowConcretize)), mostInvalid)
-      })
-    }
-  }
-  newBuiltins.set('undefined', undefined)
-  return newBuiltins
-}
-
 function nothingFunction(..._args: any[]) {
   return nothingFunction
 }
@@ -305,32 +223,37 @@ const functions = {
  * @returns SourceError if an infinite loop was detected, undefined otherwise.
  */
 export function testForInfiniteLoop(
-  program: es.Program,
-  previousProgramsStack: es.Program[],
-  loadedModules: NativeStorage['loadedModules']
+  res: Pick<LinkerSuccess, 'entrypointFilePath' | 'programs' | 'topoOrder'>,
+  oldContext: Context
 ) {
   const context = createContext(Chapter.SOURCE_4, Variant.DEFAULT, undefined, undefined)
   const prelude = parse(context.prelude as string, context) as es.Program
   context.prelude = null
-  const previous: es.Program[] = [...previousProgramsStack, prelude]
-  const newBuiltins = prepareBuiltins(context.nativeStorage.builtins)
-  const { builtinsId, functionsId, stateId, modulesId } = InfiniteLoopRuntimeObjectNames
+  context.nativeStorage.evaller = () => 0
 
-  const instrumentedCode = instrument(previous, program, newBuiltins.keys())
+  context.previousPrograms = [...oldContext.previousPrograms.slice(1), prelude]
+
+  const newBuiltins = prepareBuiltins(context.nativeStorage.builtins)
+  const transpiledProgram = transpileFilesToInfiniteLoop(res, context, true)
+  assert(!!transpiledProgram, 'Infinite loop bundler should not throw errors')
+
+  const instrumentedCode = generate(transpiledProgram)
   const state = new st.State()
 
   const sandboxedRun = new Function(
     'code',
-    functionsId,
-    stateId,
-    builtinsId,
-    modulesId,
+    NATIVE_STORAGE_ID,
     // redeclare window so modules don't do anything funny like play sounds
     '{let window = {}; return eval(code)}'
   )
 
   try {
-    sandboxedRun(instrumentedCode, functions, state, newBuiltins, loadedModules)
+    sandboxedRun(instrumentedCode, {
+      builtinsId: newBuiltins,
+      functionsId: functions,
+      stateId: state,
+      loadedModules: oldContext.nativeStorage.loadedModules
+    })
   } catch (error) {
     if (error instanceof InfiniteLoopError) {
       if (state.lastLocation !== undefined) {
@@ -338,6 +261,7 @@ export function testForInfiniteLoop(
       }
       return error
     }
+
     // Programs that exceed the maximum call stack size are okay as long as they terminate.
     if (error instanceof RangeError && error.message === 'Maximum call stack size exceeded') {
       return undefined

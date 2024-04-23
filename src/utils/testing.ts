@@ -2,13 +2,10 @@ import { generate } from 'astring'
 import type { MockedFunction } from 'jest-mock'
 
 import createContext, { defineBuiltin } from '../createContext'
-import { transpileToGPU } from '../gpu/gpu'
 import { parseError, Result, runInContext } from '../index'
-import { transpileToLazy } from '../lazy/lazy'
 import { mockContext } from '../mocks/context'
 import { ImportOptions } from '../modules/moduleTypes'
 import { parse } from '../parser/parser'
-import { transpile } from '../transpiler/transpiler'
 import {
   Chapter,
   Context,
@@ -18,6 +15,7 @@ import {
   Variant,
   type Finished
 } from '../types'
+import { transpileSingleFile } from '../transpiler'
 import { stringify } from './stringify'
 
 export interface CodeSnippetTestCase {
@@ -130,29 +128,23 @@ async function testInContext(code: string, options: TestOptions): Promise<TestRe
       variant: options.variant
     })
   )
+
   if (options.native) {
     const nativeTestContext = createTestContext(options)
     let pretranspiled: string = ''
     let transpiled: string = ''
-    const parsed = parse(code, nativeTestContext)!
+
+    const parsed = parse(code, nativeTestContext)
+
     // Reset errors in context so as not to interfere with actual run.
     nativeTestContext.errors = []
-    if (parsed === undefined) {
+    if (!parsed) {
       pretranspiled = 'parseError'
     } else {
       // Mutates program
-      switch (options.variant) {
-        case Variant.GPU:
-          transpileToGPU(parsed)
-          pretranspiled = generate(parsed)
-          break
-        case Variant.LAZY:
-          transpileToLazy(parsed)
-          pretranspiled = generate(parsed)
-          break
-      }
       try {
-        ;({ transpiled } = transpile(parsed, nativeTestContext))
+        const transpiledParsed = transpileSingleFile(parsed, nativeTestContext, true)!
+        transpiled = generate(transpiledParsed)
         // replace declaration of builtins since they're repetitive
         transpiled = transpiled.replace(/\n  const \w+ = nativeStorage\..*;/g, '')
         transpiled = transpiled.replace(/\n\s*const \w+ = .*\.operators\..*;/g, '')

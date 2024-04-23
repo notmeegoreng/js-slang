@@ -1,4 +1,6 @@
+import type { Program } from 'estree'
 import { RuntimeSourceError } from '../errors/runtimeSourceError'
+import type { LinkerSuccess } from '../modules/preprocessor/linker'
 
 export class PromiseTimeoutError extends RuntimeSourceError {}
 
@@ -64,4 +66,22 @@ type EntriesOfRecord<T extends Record<any, any>> = DeconstructRecord<T>[keyof T]
 
 export function objectEntries<T extends Record<any, any>>(obj: T): EntriesOfRecord<T>[] {
   return Object.entries(obj)
+}
+
+type DropFirst<T extends Array<any>> = T extends [any, ...infer U] ? U : never
+
+export function singleFileHelper<
+  T extends (
+    res: Pick<LinkerSuccess, 'entrypointFilePath' | 'programs' | 'topoOrder'>,
+    ...args: any[]
+  ) => any
+>(func: T, program: Program, ...args: DropFirst<Parameters<T>>): ReturnType<T> {
+  return func(
+    {
+      programs: { '/default.js': program },
+      entrypointFilePath: '/default.js',
+      topoOrder: []
+    },
+    ...args
+  )
 }

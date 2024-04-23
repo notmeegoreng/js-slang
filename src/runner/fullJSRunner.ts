@@ -6,7 +6,6 @@ import { RawSourceMap, SourceMapGenerator } from 'source-map'
 import type { Result } from '..'
 import { NATIVE_STORAGE_ID } from '../constants'
 import { RuntimeSourceError } from '../errors/runtimeSourceError'
-import type { ImportOptions } from '../modules/moduleTypes'
 import { parse } from '../parser/parser'
 import { evallerReplacer, getBuiltins } from '../transpiler/transpiler'
 import { getIdentifiersDeclaredByProgram } from '../utils/ast/helpers'
@@ -42,11 +41,7 @@ function containsPrevEval(context: Context): boolean {
   return context.nativeStorage.evaller != null
 }
 
-export async function fullJSRunner(
-  program: es.Program,
-  context: Context,
-  importOptions: ImportOptions
-): Promise<Result> {
+export async function fullJSRunner(program: es.Program, context: Context): Promise<Result> {
   // prelude & builtins
   // only process builtins and preludes if it is a fresh eval context
   const prelude = preparePrelude(context)

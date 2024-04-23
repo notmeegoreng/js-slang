@@ -41,6 +41,7 @@ import loadSourceModules from '../modules/loader'
 import { transpileFilesToFullJS, transpileFilesToSource } from '../transpiler/transpileBundler'
 import { transpileFilesToGPU } from '../gpu/gpu'
 import { transpileFilesToLazy } from '../lazy/lazy'
+import { transpileSingleFile } from '../transpiler'
 import { toSourceError } from './errors'
 import { fullJSRunner } from './fullJSRunner'
 import { determineExecutionMethod, determineVariant, resolvedErrorPromise } from './utils'
@@ -82,7 +83,16 @@ type RawRunner = (
   isPrelude: boolean
 ) => Promise<Result>
 
-function createSourceRunner(rawRunner: RawRunner, rawRunnerOptions: Partial<RunnerOptions> = {}) {
+type MainRunner = (
+  res: Pick<LinkerSuccess, 'programs' | 'topoOrder' | 'entrypointFilePath'>,
+  context: Context,
+  options: IOptions
+) => Promise<Result>
+
+function createSourceRunner(
+  rawRunner: RawRunner,
+  rawRunnerOptions: Partial<RunnerOptions> = {}
+): MainRunner {
   const runnerOptions: Required<RunnerOptions> = {
     evaluatePreludes: true,
     performValidation: true,
@@ -90,23 +100,23 @@ function createSourceRunner(rawRunner: RawRunner, rawRunnerOptions: Partial<Runn
     ...rawRunnerOptions
   }
 
-  return async (
-    linkerResult: LinkerSuccess,
-    context: Context,
-    options: IOptions
-  ): Promise<Result> => {
+  return async (linkerResult, context, options) => {
     const preprocessedProgram = runnerOptions.bundler(linkerResult, context)
     if (!preprocessedProgram) return resolvedErrorPromise
-
-    context.previousPrograms.unshift(preprocessedProgram)
 
     if (runnerOptions.evaluatePreludes && context.prelude !== null) {
       const prelude = parse(context.prelude, context)
       assert(prelude !== null, 'Prelude code should not have parser errors')
-      
+
       const preludeResult = await rawRunner(prelude, context, options, true)
+      if (context.errors.length > 0) {
+        throw context.errors[0]
+      }
+
       assert(preludeResult.status !== 'error', 'Prelude code should not have evaluation errors')
     }
+
+    context.previousPrograms.unshift(preprocessedProgram)
 
     if (runnerOptions.performValidation) {
       validateAndAnnotate(preprocessedProgram, context)
@@ -115,26 +125,27 @@ function createSourceRunner(rawRunner: RawRunner, rawRunnerOptions: Partial<Runn
 
     const result = await rawRunner(preprocessedProgram, context, options, false)
     const resultMapper = mapResult(context)
-    
+
     return resultMapper(result)
   }
 }
 
-function createNativeRunner(
-  bundler: Bundler
-) {
-  return async (linkerSuccess: LinkerSuccess, context: Context, options: IOptions) => {
-    const normalBundler = () => {
-      const program = defaultBundler(linkerSuccess, context)
-      assert(!!program, 'If parent program had no errors, this program should not either')
-      return program
-    }
+function createNativeRunner(bundler: Bundler): MainRunner {
+  return async (linkerSuccess, context, options) => {
+    const infiLoopTester = () => testForInfiniteLoop(linkerSuccess, context)
 
-    return createSourceRunner(async (program, context, options) => {
-      if (context.shouldIncreaseEvaluationTimeout && isPreviousCodeTimeoutError) {
-        context.nativeStorage.maxExecTime *= JSSLANG_PROPERTIES.factorToIncreaseBy
-      } else {
-        context.nativeStorage.maxExecTime = options.originalMaxExecTime
+    async function runNative(
+      program: es.Program,
+      context: Context,
+      options: IOptions,
+      isPrelude: boolean
+    ): Promise<Result> {
+      if (!isPrelude) {
+        if (context.shouldIncreaseEvaluationTimeout && isPreviousCodeTimeoutError) {
+          context.nativeStorage.maxExecTime *= JSSLANG_PROPERTIES.factorToIncreaseBy
+        } else {
+          context.nativeStorage.maxExecTime = options.originalMaxExecTime
+        }
       }
 
       // For whatever reason, the transpiler mutates the state of the AST as it is transpiling and inserts
@@ -148,8 +159,8 @@ function createNativeRunner(
         const sourceMapGenerator = new SourceMapGenerator()
         transpiled = generate(transpiledProgram, { sourceMapGenerator })
 
+        // console.log(transpiled)
         if (process.env.NODE_ENV === 'development') {
-          console.log(transpiled)
         }
 
         sourceMapJson = sourceMapGenerator.toJSON()
@@ -159,7 +170,9 @@ function createNativeRunner(
           value = forceIt(value)
         }
 
-        isPreviousCodeTimeoutError = false
+        if (!isPrelude) {
+          isPreviousCodeTimeoutError = false
+        }
 
         return {
           status: 'finished',
@@ -170,11 +183,7 @@ function createNativeRunner(
         const isDefaultVariant =
           options.variant === undefined || options.variant === Variant.DEFAULT
         if (isDefaultVariant && isPotentialInfiniteLoop(error)) {
-          const detectedInfiniteLoop = testForInfiniteLoop(
-            normalBundler(),
-            context.previousPrograms.slice(1),
-            context.nativeStorage.loadedModules
-          )
+          const detectedInfiniteLoop = infiLoopTester()
           if (detectedInfiniteLoop !== undefined) {
             if (options.throwInfiniteLoops) {
               context.errors.push(detectedInfiniteLoop)
@@ -208,7 +217,25 @@ function createNativeRunner(
         context.errors.push(sourceError)
         return resolvedErrorPromise
       }
-    }, { bundler, evaluatePreludes: false })(linkerSuccess, context, options)
+    }
+
+    const runner = createSourceRunner(
+      (program, context, options) => runNative(program, context, options, false),
+      { bundler, evaluatePreludes: false }
+    )
+
+    if (context.prelude) {
+      const prelude = parse(context.prelude, context)
+      assert(prelude !== null, 'Prelude code should not have parser errors')
+
+      const transpiledPrelude = transpileSingleFile(prelude, context, true)
+      assert(!!transpiledPrelude, 'Prelude code should not have transpilation errors')
+
+      const preludeResult = await runNative(transpiledPrelude, context, options, true)
+      assert(preludeResult.status !== 'error', 'Prelude code should not have evaluation errors')
+    }
+
+    return runner(linkerSuccess, context, options)
   }
 }
 
@@ -250,10 +277,11 @@ const runners = {
     },
     { evaluatePreludes: false }
   ),
-  fullJS: createSourceRunner(
-    (program, context, options) => fullJSRunner(program, context, options.importOptions),
-    { performValidation: false, evaluatePreludes: false, bundler: transpileFilesToFullJS }
-  ),
+  fullJS: createSourceRunner(fullJSRunner, {
+    performValidation: false,
+    evaluatePreludes: false,
+    bundler: transpileFilesToFullJS
+  }),
   gpu: createNativeRunner(transpileFilesToGPU),
   interpreter: createSourceRunner((program, context, options) => {
     let it = evaluate(program, context)
@@ -295,7 +323,7 @@ const runners = {
     },
     { evaluatePreludes: false }
   )
-}
+} satisfies Record<string, MainRunner>
 
 async function sourceRunner(
   preprocessResult: LinkerSuccess,
