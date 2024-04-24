@@ -267,11 +267,11 @@ export type NativeBundler = (
   skipUndefined?: boolean
 ) => es.Program | undefined
 
-export function getNativeTranspiler(fileTranspiler: FileTranspiler) {
+export function getNativeTranspiler(fileTranspiler: FileTranspiler, mainSkipUndefined?: boolean) {
   const filesTranspiler: NativeBundler = (linker, context, skipUndefined: boolean = false) =>
-    transpileFiles(linker, context, fileTranspiler, skipUndefined)
+    transpileFiles(linker, context, fileTranspiler, mainSkipUndefined ?? skipUndefined)
   return filesTranspiler
 }
 
 export const transpileFilesToSource = getNativeTranspiler(sourceFileTranspiler)
-export const transpileFilesToFullJS = getNativeTranspiler(prog => [[], prog.body])
+export const transpileFilesToFullJS = getNativeTranspiler(prog => [[], prog.body], true)
