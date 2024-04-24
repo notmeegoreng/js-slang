@@ -4,7 +4,6 @@ import { ConstAssignment, UndefinedVariable } from '../errors/errors'
 import { NoAssignmentToForVariable } from '../errors/validityErrors'
 import { parse } from '../parser/parser'
 import { Context, Node, NodeWithInferredType } from '../types'
-import { getVariableDeclarationName } from '../utils/ast/astCreator'
 import {
   getFunctionDeclarationNamesInProgram,
   getIdentifiersInNativeStorage,
@@ -21,6 +20,27 @@ class Declaration {
   constructor(public isConstant: boolean) {}
 }
 
+function determineConst(node: Exclude<es.ModuleDeclaration, es.ExportAllDeclaration> | es.Declaration): boolean {
+  switch (node.type) {
+    case 'ExportNamedDeclaration':
+      return !!node.declaration && determineConst(node.declaration)
+    case 'ExportDefaultDeclaration': {
+      switch (node.declaration.type) {
+        case 'ClassDeclaration':
+        case 'FunctionDeclaration':
+          return true
+      }
+      return false
+    }
+    case 'VariableDeclaration':
+      return node.kind === 'const'
+    case 'ImportDeclaration':
+    case 'FunctionDeclaration':
+    case 'ClassDeclaration':
+      return true
+  }
+}
+
 export function validateAndAnnotate(
   program: es.Program,
   context: Context
@@ -30,19 +50,29 @@ export function validateAndAnnotate(
   function processBlock(node: es.Program | es.BlockStatement) {
     const initialisedIdentifiers = new Map<string, Declaration>()
     for (const statement of node.body) {
-      if (statement.type === 'VariableDeclaration') {
-        initialisedIdentifiers.set(
-          getVariableDeclarationName(statement),
-          new Declaration(statement.kind === 'const')
-        )
-      } else if (statement.type === 'FunctionDeclaration') {
-        if (statement.id === null) {
-          throw new Error(
-            'Encountered a FunctionDeclaration node without an identifier. This should have been caught when parsing.'
-          )
+      if (isDeclaration(statement) || isModuleDeclaration(statement)) {
+        if (statement.type === 'ExportAllDeclaration') continue
+        
+        const isConst = determineConst(statement)
+        for (const id of getIdsFromDeclaration(statement, true)) {
+          if (!id) continue
+          initialisedIdentifiers.set(id.name, new Declaration(isConst))
         }
-        initialisedIdentifiers.set(statement.id.name, new Declaration(true))
       }
+
+      // if (statement.type === 'VariableDeclaration') {
+      //   initialisedIdentifiers.set(
+      //     getVariableDeclarationName(statement),
+      //     new Declaration(statement.kind === 'const')
+      //   )
+      // } else if (statement.type === 'FunctionDeclaration') {
+      //   if (statement.id === null) {
+      //     throw new Error(
+      //       'Encountered a FunctionDeclaration node without an identifier. This should have been caught when parsing.'
+      //     )
+      //   }
+      //   initialisedIdentifiers.set(statement.id.name, new Declaration(true))
+      // }
     }
     scopeHasCallExpressionMap.set(node, false)
     accessedBeforeDeclarationMap.set(node, initialisedIdentifiers)
@@ -64,9 +94,10 @@ export function validateAndAnnotate(
     ForStatement(forStatement: es.ForStatement, _ancestors: Node[]) {
       const init = forStatement.init!
       if (init.type === 'VariableDeclaration') {
+        const [{ name }] = getIdsFromDeclaration(init)
         accessedBeforeDeclarationMap.set(
           forStatement,
-          new Map([[getVariableDeclarationName(init), new Declaration(init.kind === 'const')]])
+          new Map([[name, new Declaration(init.kind === 'const')]])
         )
         scopeHasCallExpressionMap.set(forStatement, false)
       }
@@ -107,11 +138,12 @@ export function validateAndAnnotate(
     {
       VariableDeclaration(node: NodeWithInferredType<es.VariableDeclaration>, ancestors: Node[]) {
         const lastAncestor = ancestors[ancestors.length - 2]
-        const name = getVariableDeclarationName(node)
-        const accessedBeforeDeclaration = accessedBeforeDeclarationMap
-          .get(lastAncestor)!
-          .get(name)!.accessedBeforeDeclaration
-        node.typability = accessedBeforeDeclaration ? 'Untypable' : 'NotYetTyped'
+        for (const { name } of getIdsFromDeclaration(node)) {
+          const accessedBeforeDeclaration = accessedBeforeDeclarationMap
+            .get(lastAncestor)!
+            .get(name)!.accessedBeforeDeclaration
+          node.typability = accessedBeforeDeclaration ? 'Untypable' : 'NotYetTyped'
+        }
       },
       Identifier: validateIdentifier,
       FunctionDeclaration(node: NodeWithInferredType<es.FunctionDeclaration>, ancestors: Node[]) {

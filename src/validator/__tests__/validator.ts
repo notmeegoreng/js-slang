@@ -3,11 +3,11 @@ import * as es from 'estree'
 import { mockContext } from '../../mocks/context'
 import { parse } from '../../parser/parser'
 import { Chapter, NodeWithInferredType } from '../../types'
-import { getVariableDeclarationName } from '../../utils/ast/astCreator'
 import { stripIndent } from '../../utils/formatters'
 import { expectParsedError } from '../../utils/testing'
 import { simple } from '../../utils/walkers'
 import { validateAndAnnotate } from '../validator'
+import { getIdsFromDeclaration } from '../../utils/ast/helpers'
 
 export function toValidatedAst(code: string) {
   const context = mockContext(Chapter.SOURCE_1)
@@ -57,7 +57,8 @@ test('testing typability', () => {
   simple(ast, {
     VariableDeclaration(node: NodeWithInferredType<es.VariableDeclaration>) {
       let expectedTypability = ''
-      switch (getVariableDeclarationName(node)) {
+      const [{ name }] = getIdsFromDeclaration(node)
+      switch (name) {
         case 'a':
         case 'b':
           expectedTypability = 'NotYetTyped'
